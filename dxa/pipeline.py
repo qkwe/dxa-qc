@@ -2,6 +2,9 @@
 
 Устойчивость (ТЗ п. 2.7): любая ошибка на файле или снимке фиксируется в строке результата
 (processing_status = Failure, error = текст), обработка остальных продолжается.
+
+Настройки (dxa/settings.py) задаются для сервиса целиком и могут переопределяться на задание:
+режим чувствительности, пороги, отключённые критерии, размер пикселя, правило области.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import pydicom
 
 from . import features
 from .data import pixel_spacing
+from .settings import Settings
 
 warnings.filterwarnings("ignore")
 
@@ -29,8 +33,8 @@ REGION_NAMES = {"spine": "Поясничный отдел позвоночник
 SIDE_NAMES = {"l": "левое", "r": "правое"}
 
 # Область без тегов: у аппарата организатора снимок позвоночника 300 пикселей в ширину, бедра — 248–280
-# (252 из 252 снимков обучения). Порог — середина промежутка.
-SPINE_MIN_WIDTH_PX = 290
+# (252 из 252 снимков обучения). Порог — середина промежутка; меняется в настройках (spine_min_width_px).
+SPINE_MIN_WIDTH_PX = Settings().spine_min_width_px
 
 # подсказки из тегов и имён файлов (в наборе организатора: ПОП, ЛПОБ, ППОБ)
 _SPINE_HINT = re.compile(r"(ПОП|позвон|spine|l1-?l4|lumbar)", re.I)
@@ -114,6 +118,24 @@ def read_items(src) -> list[Item]:
     return items
 
 
+def settings_note(st: Settings) -> str:
+    """Краткая запись отличий настроек от умолчаний: «mode=sensitive; axis_limit_deg=6 (было 5)»."""
+    from .settings import CRITERIA_TITLES, MODE_TITLES, PARAMS
+
+    parts = []
+    for name, value, default in st.changes():
+        if name.startswith("criteria."):
+            parts.append(f"критерий «{CRITERIA_TITLES[name[9:]]}» выключен")
+        elif name == "mode":
+            parts.append(f"режим: {MODE_TITLES[value]}")
+        elif name == "pixel_spacing_mm":
+            parts.append(f"размер пикселя задан вручную: {value[0]:g} × {value[1]:g} мм")
+        else:
+            label, unit = PARAMS[name][:2]
+            parts.append(f"{label}: {value:g}{('' if unit == '°' else ' ') + unit if unit else ''} (по умолчанию {default:g})")
+    return "; ".join(parts)
+
+
 def _hint(it: Item, pattern: re.Pattern) -> bool:
     ds = it.ds
     text = " ".join(str(ds.get(t, "") or "") for t in ("BodyPartExamined", "SeriesDescription", "ProtocolName",
@@ -124,36 +146,44 @@ def _hint(it: Item, pattern: re.Pattern) -> bool:
 class Service:
     """Загружает модели один раз; process() — обработка каталога/zip."""
 
-    def __init__(self, model_path="models/quality_model.joblib"):
+    def __init__(self, model_path="models/quality_model.joblib", settings: Settings | None = None):
         self.model = joblib.load(model_path)["quality"]
+        self.settings = settings or Settings()
+
+    @staticmethod
+    def _spacing(it: Item, st: Settings) -> tuple[float, float]:
+        """Размер пикселя: из настроек, если задан принудительно, иначе из тега с проверкой правдоподобия."""
+        return tuple(st.pixel_spacing_mm) if st.pixel_spacing_mm else pixel_spacing(it.ds, it.array)
 
     # --- область и сторона
     @staticmethod
-    def _region(it: Item) -> str:
+    def _region(it: Item, st: Settings | None = None) -> str:
         spine_hint, femur_hint = _hint(it, _SPINE_HINT), _hint(it, _FEMUR_HINT)
         if spine_hint != femur_hint:
             return "spine" if spine_hint else "femur"
-        return "spine" if it.array.shape[1] >= SPINE_MIN_WIDTH_PX else "femur"
+        width = (st or Settings()).spine_min_width_px
+        return "spine" if it.array.shape[1] >= width else "femur"
 
     @staticmethod
-    def _anatomical_side(it: Item) -> str:
+    def _anatomical_side(it: Item, spacing) -> str:
         """Сторона бедра по анатомии: головка и таз — медиально, там больше кости вверху."""
         from . import roi
 
-        lm = roi.landmarks(it.array, pixel_spacing(it.ds, it.array), None)
+        lm = roi.landmarks(it.array, spacing, None)
         # medial="right" на снимке — правое бедро (пациент лицом к наблюдателю)
         return "r" if lm and lm["medial"] == "right" else "l"
 
-    def _side(self, it: Item) -> tuple[str, str]:
+    def _side(self, it: Item, spacing) -> tuple[str, str]:
         left, right = _hint(it, _LEFT_HINT), _hint(it, _RIGHT_HINT)
-        anat = self._anatomical_side(it)
+        anat = self._anatomical_side(it, spacing)
         if left != right:
             tag = "l" if left else "r"
             return tag, ("теги/имя файла" + ("" if tag == anat else f"; анатомия указывает на {SIDE_NAMES[anat]}"))
         return anat, "по анатомии (головка медиально)"
 
-    def process(self, src, series_dir: str | Path | None = None, progress=None) -> list[dict]:
-        t_read = time.time()
+    def process(self, src, series_dir: str | Path | None = None, progress=None,
+                settings: Settings | None = None) -> list[dict]:
+        st = settings or self.settings
         items = read_items(src)
         by_study = defaultdict(list)
         for it in items:
@@ -171,7 +201,7 @@ class Service:
                     continue
                 seen[key] = it
                 try:
-                    self._process_image(it)
+                    self._process_image(it, st)
                 except Exception as e:
                     it.error = f"{type(e).__name__}: {e}"
                     it.result["trace"] = traceback.format_exc(limit=3)
@@ -186,22 +216,23 @@ class Service:
                     try:
                         from . import report
                         png = report.write_series(it, Path(series_dir))
-                        rows[-1]["overlay"] = str(Path(png).relative_to(Path(series_dir)))
+                        rows[-1]["overlay"] = Path(png).relative_to(Path(series_dir)).as_posix()
                     except Exception as e:
                         rows[-1]["error"] = (rows[-1].get("error") or "") + f" доп. серия: {e}"
             if progress:
                 progress(n + 1, len(by_study))
         return rows
 
-    def _process_image(self, it: Item):
-        spacing = pixel_spacing(it.ds, it.array)
-        it.region = self._region(it)
+    def _process_image(self, it: Item, st: Settings):
+        spacing = self._spacing(it, st)
+        it.region = self._region(it, st)
         if it.region == "femur":
-            it.side, it.result["side_source"] = self._side(it)
+            it.side, it.result["side_source"] = self._side(it, spacing)
         feats = features.geometry(it.array, spacing, it.region, it.side)
         it.result["features"] = feats
         it.result["spacing"] = spacing
-        it.result["criteria"] = self.model.predict(feats, it.region)
+        it.result["criteria"] = self.model.predict(feats, it.region, st)
+        it.result["settings_note"] = settings_note(st)
         it.result["probs"], it.result["quality_prob"] = self.model.probabilities(it.result["criteria"], it.region)
 
     @staticmethod
@@ -227,4 +258,6 @@ class Service:
                                   for name, (_, _, text) in crit.items()),
             "duplicate_of": it.duplicate_of or "",
             "error": it.error or "",
+            # пусто при настройках по умолчанию (ТЗ); иначе — что изменено, для воспроизводимости
+            "settings": it.result.get("settings_note", "") if not it.error else "",
         }

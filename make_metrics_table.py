@@ -28,7 +28,7 @@ def ci(v, key):
 
 rows = []
 for name, v in report.items():
-    if not isinstance(v, dict):
+    if not isinstance(v, dict) or name == "режимы":  # режимы — отдельная таблица в README/REPORT
         continue
     if name.startswith("quality_prob"):
         rows.append([name, "", "", f"{v['auc']:.3f} {ci(v, 'auc')}", "", "", "",

@@ -15,7 +15,7 @@ colab/*.npz
 *.npz
 *.dcm
 
-# веса SigLIP (1.6 ГБ, больше лимита GitHub) — получить: python scripts/export_siglip.py
+# веса нейросетей из исследований (experiments/) — в репозиторий не кладём
 weights/
 
 # текст ТЗ организатора — не публикуем

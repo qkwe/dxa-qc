@@ -8,7 +8,8 @@ FROM python:3.10.16-slim-bookworm
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    DXA_JOBS=/data/jobs
+    DXA_JOBS=/data/jobs \
+    DXA_INPUT_ROOTS=/data
 
 # шрифт с кириллицей для подписей на доп. сериях; curl — для healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core curl \
@@ -21,6 +22,8 @@ RUN pip install --upgrade pip==25.0.1 && pip install -r requirements.txt
 COPY models ./models
 COPY dxa ./dxa
 COPY train.py evaluate_final.py ./
+# честные метрики режимов чувствительности — показываются в настройках веб-интерфейса
+COPY out/metrics_final.json ./out/metrics_final.json
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD curl -fs http://localhost:8000/health || exit 1

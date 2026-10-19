@@ -1,0 +1,17 @@
+{
+ "mode": "balanced",
+ "axis_limit_deg": 5,
+ "roi_bottom_cm": 3,
+ "field_min_cm": 13,
+ "iliac_min_frac": 0.005,
+ "ischium_min_frac": 0.02,
+ "spine_min_width_px": 290,
+ "pixel_spacing_mm": null,
+ "criteria": {
+  "spine_axis": true,
+  "spine_positioning": true,
+  "spine_foreign": true,
+  "femur_positioning": true,
+  "femur_roi": true
+ }
+}

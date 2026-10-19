@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dxa import features
 from dxa.data import LABELS, load_dataset
 from dxa.model import CRITERIA, QualityModel
+from dxa.settings import MODES, Settings
 
 try:  # cp1251-консоль на русской Windows не должна ронять печать
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -47,6 +48,8 @@ y_any = np.array([int(i.quality) for i in images])
 flags = {L: np.zeros(len(images)) for L in LABELS}
 scores = {L: np.zeros(len(images)) for L in LABELS}
 qprob = np.zeros(len(images))
+# режимы чувствительности: те же фолды, пороги режима подбираются внутри обучающей части
+mode_flags = {md: {L: np.zeros(len(images)) for L in LABELS} for md in MODES}
 for seed in range(SEEDS):
     for tr, te in StratifiedGroupKFold(FOLDS, shuffle=True, random_state=seed).split(np.zeros(len(images)), y_any, groups):
         m = QualityModel().fit([feats[i] for i in tr], [regions[i] for i in tr], [labels[i] for i in tr])
@@ -56,6 +59,9 @@ for seed in range(SEEDS):
                 flags[L][i] += flag / SEEDS
                 scores[L][i] += score / SEEDS
             qprob[i] += m.probabilities(out, regions[i])[1] / SEEDS
+            for md in MODES:
+                for L, (flag, _, _) in m.predict(feats[i], regions[i], Settings(mode=md)).items():
+                    mode_flags[md][L][i] += flag / SEEDS
 
 
 def boot(y, pred, score, g, n=1000):
@@ -139,5 +145,29 @@ for k, v in report.items():
     c = v["ci"]
     print(f"{k:62s} {v['n']:4d} {v['positives']:4d}  {v['auc']:.3f} [{c['auc'][0]:.2f}; {c['auc'][1]:.2f}]  "
           f"{v['f1']:.3f} [{c['f1'][0]:.2f}; {c['f1'][1]:.2f}]  {v['sens']:.2f}    {v['spec']:.2f}    {v['bacc']:.2f}")
+# --- режимы: чувствительность / специфичность обучаемых критериев и итога «есть нарушение»
+modes = {}
+print("\nрежимы (обучаемые пороги: посторонние предметы, ротация бедра)")
+for md in MODES:
+    res = {}
+    any_pred = np.zeros(len(images), int)
+    for region, crits in CRITERIA.items():
+        for L in crits:
+            sub = np.array([i for i, r in enumerate(regions) if r == region and L in labels[i]])
+            y = np.array([labels[i][L] for i in sub])
+            pred = (mode_flags[md][L][sub] >= 0.5).astype(int)
+            any_pred[sub] = np.maximum(any_pred[sub], pred)
+            mm = metrics(y, pred, scores[L][sub])
+            res[f"{region}: {L}"] = {k: mm[k] for k in ("f1", "sens", "spec")}
+    mm = metrics(y_any, any_pred, all_score)
+    ci = boot(y_any, any_pred, all_score, groups)
+    res["все снимки: качество (есть нарушение)"] = {k: mm[k] for k in ("f1", "sens", "spec")} | {
+        "ci": {k: ci[k] for k in ("f1", "sens", "spec")}}
+    modes[md] = res
+    print(f"  {md:10s} есть нарушение: чувств {mm['sens']:.2f} [{ci['sens'][0]:.2f}; {ci['sens'][1]:.2f}]  "
+          f"специф {mm['spec']:.2f} [{ci['spec'][0]:.2f}; {ci['spec'][1]:.2f}]  F1 {mm['f1']:.3f}")
+    for k in ("spine: Присутствуют посторонние предметы", "femur: Некорректная укладка"):
+        print(f"      {k:44s} чувств {res[k]['sens']:.2f}  специф {res[k]['spec']:.2f}  F1 {res[k]['f1']:.3f}")
+report["режимы"] = modes
 json.dump(report, open("out/metrics_final.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 pickle.dump(dict(flags=flags, scores=scores, qprob=qprob, keys=keys), open("out/oof_final.pkl", "wb"))

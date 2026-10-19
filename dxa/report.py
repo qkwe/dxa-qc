@@ -170,9 +170,11 @@ def text_sr(it) -> Dataset:
     ds.ConceptNameCodeSequence = Sequence([code("QC", "Контроль качества денситометрии")])
     ds.CompletionFlag, ds.VerificationFlag = "COMPLETE", "UNVERIFIED"
     items = [text_item("Изображение", f"SOPInstanceUID {it.image_uid}"),
-             text_item("Область", f"{it.region}{' ' + it.side if it.side else ''}"),
+             text_item("Область", f"{_REGION.get(it.region, it.region)}{' (' + _SIDE.get(it.side, it.side) + ')' if it.side else ''}"),
              text_item("Итог", ("Есть нарушение: " + "; ".join(bad)) if bad else "Исследование качественное")]
     items += [text_item(name, ("НАРУШЕНИЕ. " if flag else "норма. ") + text) for name, (flag, _, text) in crit.items()]
+    if it.result.get("settings_note"):
+        items.append(text_item("Настройки", it.result["settings_note"]))
     items.append(text_item("Примечание", "Результат ИИ-сервиса, требует подтверждения специалистом."))
     ds.ContentSequence = Sequence(items)
     ref = Dataset()
@@ -180,6 +182,10 @@ def text_sr(it) -> Dataset:
     ref.ReferencedSOPInstanceUID = it.image_uid
     ds.CurrentRequestedProcedureEvidenceSequence = Sequence([])
     return ds
+
+
+_REGION = {"spine": "Поясничный отдел позвоночника", "femur": "Проксимальный отдел бедра"}
+_SIDE = {"l": "левое", "r": "правое"}
 
 
 def write_series(it, out_dir: Path):

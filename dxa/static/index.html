@@ -56,7 +56,7 @@
   tr.sel td { background: var(--sel) !important; color: #fff; }
   tbody tr { cursor: pointer; }
   .right { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-  #viewer { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; overflow: hidden; min-height: 200px; }
+  #viewer { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; overflow: hidden; min-height: 120px; }
   #viewer img { max-width: 100%; max-height: 100%; image-rendering: pixelated; }
   #viewer .ph { color: #6f6; font: 12px "Courier New", monospace; text-align: center; padding: 10px; }
   #details { height: 170px; overflow: auto; padding: 4px; font: 11px "Courier New", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -73,6 +73,16 @@
   .tag { display: inline-block; padding: 0 3px; border: 1px solid #800000; color: #800000; background: #fff; margin: 1px 2px 1px 0; }
   .ok { color: #006400; font-weight: bold; }
   .no { color: #b00000; font-weight: bold; }
+  #settings { display: none; margin: 4px 6px 0; }
+  #settings.open { display: block; }
+  #settings .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 6px; }
+  #settings label.row { display: flex; align-items: center; gap: 4px; margin: 2px 0; }
+  #settings label.row span.l { flex: 1; }
+  #settings input[type=number] { width: 70px; font: 11px Tahoma, sans-serif; }
+  #settings .chg { background: #ffff99; }
+  #settings .hint { color: #404040; margin: 0 0 4px 22px; }
+  #settings .tz { color: #0a246a; font-weight: bold; }
+  #settings .foot { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
   @media (max-width: 900px) {
     .main { grid-template-columns: 1fr; }
     #viewer { min-height: 260px; }
@@ -87,7 +97,11 @@
   </div>
   <div class="toolbar">
     <input type="file" id="files" multiple accept=".dcm,.zip,application/dicom,application/zip" style="max-width:260px">
+    <button id="pickdir" title="Выбрать каталог с исследованиями целиком (с подпапками)">Папка...</button>
+    <input type="file" id="dir" webkitdirectory multiple style="display:none">
     <button id="run" disabled>▶ Обработать</button>
+    <div class="sep"></div>
+    <button id="opts" title="Режим чувствительности, пороги, проверяемые критерии">⚙ Настройки...</button>
     <div class="sep"></div>
     <a class="btn" id="dlx" href="#" style="display:none">Отчёт XLSX</a>
     <a class="btn" id="dlc" href="#" style="display:none">Отчёт CSV</a>
@@ -96,6 +110,31 @@
     <label><input type="checkbox" id="onlybad"> только с нарушениями</label>
   </div>
   <div class="warn">⚠ Результат формируется программой ИИ и носит вспомогательный характер. Окончательное решение принимает врач. Не для первичной диагностики.</div>
+  <fieldset id="settings">
+    <legend>Настройки контроля (применяются к следующей обработке)</legend>
+    <div class="cols">
+      <div>
+        <b>Режим обучаемых порогов</b><br>(посторонние предметы, ротация бедра)
+        <div id="modes"></div>
+      </div>
+      <div>
+        <b>Пороги</b> (<span class="tz">ТЗ</span> — значение из технического задания)
+        <div id="params"></div>
+        <label class="row"><input type="checkbox" id="px_auto" checked><span class="l">Размер пикселя — из DICOM-тега</span></label>
+        <label class="row" id="px_row" style="display:none"><span class="l">Размер пикселя x × y, мм</span>
+          <input type="number" id="px_x" step="0.01" min="0.05" max="3" value="0.6"> × <input type="number" id="px_y" step="0.01" min="0.05" max="3" value="0.6"></label>
+      </div>
+      <div>
+        <b>Проверяемые критерии</b>
+        <div id="crit"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <button id="reset">По умолчанию (ТЗ)</button>
+      <button id="closeopts">Закрыть</button>
+      <span id="optmsg"></span>
+    </div>
+  </fieldset>
   <div class="main">
     <fieldset>
       <legend>Журнал обработки изображений</legend>
@@ -121,6 +160,7 @@
     <div class="grow" id="status">Готов</div>
     <div class="progress sunken" id="prog"><i id="bar"></i><b id="bartext"></b></div>
     <div id="count">Файлов: 0</div>
+    <div id="optstate">Настройки: по умолчанию</div>
     <div id="svc">Сервис: проверка...</div>
     <div id="clock"></div>
   </div>
@@ -132,12 +172,106 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<"
 setInterval(() => { $("clock").textContent = new Date().toLocaleString("ru-RU"); }, 1000);
 fetch("health").then((r) => r.json()).then((h) => { $("svc").textContent = h.status === "ok" ? "Сервис: работает" : "Сервис: недоступен"; })
   .catch(() => { $("svc").textContent = "Сервис: недоступен"; });
-$("files").onchange = () => { $("run").disabled = !$("files").files.length; };
+// --- выбор файлов: отдельные файлы/zip или целый каталог (относительные пути сохраняются)
+let picked = [];
+$("files").onchange = () => { picked = [...$("files").files]; $("dir").value = ""; pickedChanged(); };
+$("pickdir").onclick = () => $("dir").click();
+$("dir").onchange = () => { picked = [...$("dir").files]; $("files").value = ""; pickedChanged(); };
+function pickedChanged() {
+  $("run").disabled = !picked.length;
+  $("status").textContent = picked.length ? `Выбрано файлов: ${picked.length}` : "Готов";
+}
 $("onlybad").onchange = () => render();
+
+// --- настройки контроля: умолчания и пределы — с сервера (/api/settings), выбор пользователя — в браузере
+let info = null, opts = {};
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem("dxa-settings") || "{}"); } catch (e) { return {}; } },
+  set(v) { try { localStorage.setItem("dxa-settings", JSON.stringify(v)); } catch (e) { /* без сохранения */ } },
+};
+const pct = (x) => Math.round(100 * x) + "%";
+
+function changedOpts() {
+  // только отличия от настроек сервиса — их и отправляем вместе с заданием
+  const out = {};
+  if (!info) return out;
+  const d = info.service;
+  for (const k of Object.keys(opts)) {
+    if (k === "criteria") {
+      const c = {};
+      for (const [ck, on] of Object.entries(opts.criteria)) if (on !== d.criteria[ck]) c[ck] = on;
+      if (Object.keys(c).length) out.criteria = c;
+    } else if (JSON.stringify(opts[k]) !== JSON.stringify(d[k])) out[k] = opts[k];
+  }
+  return out;
+}
+
+function showOptState() {
+  const c = changedOpts();
+  const n = Object.keys(c).filter((k) => k !== "criteria").length + Object.keys(c.criteria || {}).length;
+  $("optstate").textContent = n ? `Настройки: изменено ${n}` : "Настройки: по умолчанию";
+  $("optstate").style.background = n ? "#ffff99" : "";
+}
+
+function buildSettings() {
+  const d = info.service, mm = info.modes_metrics;
+  $("modes").innerHTML = info.modes.map((m) => {
+    const r = mm && mm[m] && mm[m]["все снимки: качество (есть нарушение)"];
+    const hint = r ? `находит ${pct(r.sens)} снимков с нарушением, верно оставляет ${pct(r.spec)} нормальных` : "";
+    return `<label class="row"><input type="radio" name="mode" value="${m}"><span class="l">${esc(info.mode_titles[m])}</span></label>` +
+           (hint ? `<div class="hint">${hint}</div>` : "");
+  }).join("") + (mm ? '<div class="hint">оценка на кросс-валидации по пациентам, все критерии вместе</div>' : "");
+  $("params").innerHTML = Object.entries(info.params).map(([k, p]) =>
+    `<label class="row" id="row_${k}"><span class="l">${esc(p.label)}${p.unit ? ", " + esc(p.unit) : ""}` +
+    `${p.tz ? ' <span class="tz">ТЗ</span>' : ""}</span>` +
+    `<input type="number" id="p_${k}" min="${p.min}" max="${p.max}" step="any"></label>`).join("");
+  $("crit").innerHTML = Object.entries(info.criteria).map(([k, t]) =>
+    `<label class="row"><input type="checkbox" id="c_${k}"><span class="l">${esc(t)}</span></label>`).join("");
+  document.querySelectorAll("input[name=mode]").forEach((r) => r.onchange = () => { opts.mode = r.value; syncSettings(); });
+  for (const k of Object.keys(info.params)) $("p_" + k).oninput = (e) => {
+    const p = info.params[k], v = Number(e.target.value);
+    if (e.target.value !== "" && v >= p.min && v <= p.max) { opts[k] = v; $("optmsg").textContent = ""; }
+    else $("optmsg").textContent = `${p.label}: допустимо от ${p.min} до ${p.max}`;
+    syncSettings(false);
+  };
+  for (const k of Object.keys(info.criteria)) $("c_" + k).onchange = (e) => { opts.criteria[k] = e.target.checked; syncSettings(); };
+  $("px_auto").onchange = () => { opts.pixel_spacing_mm = $("px_auto").checked ? null : [Number($("px_x").value), Number($("px_y").value)]; syncSettings(); };
+  $("px_x").oninput = $("px_y").oninput = () => { if (!$("px_auto").checked) opts.pixel_spacing_mm = [Number($("px_x").value), Number($("px_y").value)]; syncSettings(false); };
+}
+
+function syncSettings(redraw = true) {
+  const d = info.service;
+  document.querySelectorAll("input[name=mode]").forEach((r) => { r.checked = r.value === opts.mode; });
+  for (const k of Object.keys(info.params)) {
+    if (redraw) $("p_" + k).value = opts[k];
+    $("row_" + k).classList.toggle("chg", opts[k] !== d[k]);
+  }
+  for (const k of Object.keys(info.criteria)) $("c_" + k).checked = opts.criteria[k];
+  $("px_auto").checked = !opts.pixel_spacing_mm;
+  $("px_row").style.display = opts.pixel_spacing_mm ? "" : "none";
+  if (opts.pixel_spacing_mm && redraw) [$("px_x").value, $("px_y").value] = opts.pixel_spacing_mm;
+  store.set(changedOpts());
+  showOptState();
+}
+
+fetch("api/settings").then((r) => r.json()).then((s) => {
+  info = s;
+  const saved = store.get();
+  opts = JSON.parse(JSON.stringify(info.service));
+  for (const [k, v] of Object.entries(saved)) {
+    if (k === "criteria") Object.assign(opts.criteria, v); else if (k in opts) opts[k] = v;
+  }
+  buildSettings(); syncSettings();
+}).catch(() => { $("opts").disabled = true; $("opts").title = "настройки недоступны"; });
+$("opts").onclick = () => $("settings").classList.toggle("open");
+$("closeopts").onclick = () => $("settings").classList.remove("open");
+$("reset").onclick = () => { opts = JSON.parse(JSON.stringify(info.service)); $("optmsg").textContent = ""; syncSettings(); };
 
 $("run").onclick = async () => {
   const fd = new FormData();
-  for (const f of $("files").files) fd.append("files", f);
+  for (const f of picked) fd.append("files", f, f.webkitRelativePath || f.name);
+  if ($("optmsg").textContent) { $("status").textContent = "ОШИБКА В НАСТРОЙКАХ: " + $("optmsg").textContent; return; }
+  fd.append("settings", JSON.stringify(changedOpts()));
   $("run").disabled = true;
   $("status").textContent = "Загрузка файлов на сервер...";
   for (const id of ["dlx", "dlc", "dls"]) $(id).style.display = "none";
@@ -149,7 +283,7 @@ $("run").onclick = async () => {
     poll();
   } catch (e) {
     $("status").textContent = "ОШИБКА: " + e.message;
-    $("run").disabled = false;
+    $("run").disabled = !picked.length;
   }
 };
 
@@ -164,7 +298,7 @@ async function poll() {
     setTimeout(poll, 1000);
     return;
   }
-  $("run").disabled = false;
+  $("run").disabled = !picked.length;
   if (j.status === "error") {
     $("status").textContent = "ОШИБКА ОБРАБОТКИ: " + j.error;
     $("prog").className = "progress sunken failed"; $("bar").style.width = "100%"; $("bartext").textContent = "Ошибка";
@@ -218,7 +352,7 @@ function select(tr, r) {
     `ИССЛЕДОВАНИЕ: ${r.study_uid}\nИЗОБРАЖЕНИЕ:  ${r.image_uid}\nОБЛАСТЬ:      ${r.anatomical_region}${r.side ? " (" + r.side + ")" : ""}\n` +
     `ИТОГ:         ${r.quality_class === 1 ? "ЕСТЬ НАРУШЕНИЕ" : (r.quality_class === 0 ? "КАЧЕСТВЕННОЕ" : "—")}\n` +
     `ВЕРОЯТНОСТЬ НАРУШЕНИЯ: ${prob(r) || "—"}\n` +
-    `----------------------------------------\n${det}` + (r.error ? `\n\nОШИБКА: ${r.error}` : "");
+    `----------------------------------------\n${det}` + (r.settings ? `\n\nНАСТРОЙКИ: ${r.settings}` : "") + (r.error ?`\n\nОШИБКА: ${r.error}` : "");
 }
 </script>
 </body>

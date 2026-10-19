@@ -13,6 +13,11 @@
 Нейросетевых признаков нет: замороженный SigLIP в честной CV не улучшал ротацию бедра
 (AUC 0.852 с ним против 0.863 без него), а тянул за собой torch и 1.6 ГБ весов.
 Пороги подбираются по F1 на out-of-fold предсказаниях ОБУЧАЮЩЕЙ части.
+
+Для обучаемых порогов (посторонние предметы, ротация бедра) запоминаются три режима
+(dxa/settings.py): balanced — максимум F1 (умолчание), sensitive — найти не меньше 90%
+нарушений обучающей выборки, specific — не больше 5% ложных тревог. Пороги ТЗ и включение
+критериев задаются в Settings; без настроек поведение прежнее.
 """
 
 from __future__ import annotations
@@ -22,14 +27,22 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 
 from .data import LABEL_AXIS, LABEL_FOREIGN, LABEL_POSITIONING, LABEL_ROI
+from .settings import MODE_TITLES, SENSITIVE_TARGET, SPECIFIC_TARGET, Settings
 
-AXIS_LIMIT_DEG = 5.0          # ТЗ
-ILIAC_MIN_FRAC = 0.005        # «гребни не видны»: кости по бокам у нижнего края практически нет
-ROI_BOTTOM_CM = 3.0           # ТЗ
-# ТЗ: по 3 см сверху и снизу от области интереса; стандартная область интереса бедра ~7 см —
-# скан короче 7 + 3 + 3 = 13 см не может её вместить (бедро почти не попало в кадр)
-FIELD_MIN_CM = 13.0
-ISCHIUM_MIN_FRAC = 0.02       # ТЗ: седалищная кость должна быть в кадре; «не видна» — кости почти нет
+_DEFAULT = Settings()
+# умолчания (ТЗ); сами значения и пояснения — в dxa/settings.py
+AXIS_LIMIT_DEG = _DEFAULT.axis_limit_deg
+ILIAC_MIN_FRAC = _DEFAULT.iliac_min_frac
+ROI_BOTTOM_CM = _DEFAULT.roi_bottom_cm
+FIELD_MIN_CM = _DEFAULT.field_min_cm
+ISCHIUM_MIN_FRAC = _DEFAULT.ischium_min_frac
+
+# ключ критерия в настройках (Settings.criteria) по области и метке организатора
+CRITERION_KEY = {
+    ("spine", LABEL_AXIS): "spine_axis", ("spine", LABEL_POSITIONING): "spine_positioning",
+    ("spine", LABEL_FOREIGN): "spine_foreign", ("femur", LABEL_POSITIONING): "femur_positioning",
+    ("femur", LABEL_ROI): "femur_roi",
+}
 
 CRITERIA = {
     "spine": [LABEL_POSITIONING, LABEL_AXIS, LABEL_FOREIGN],
@@ -54,6 +67,25 @@ def _best_threshold(y: np.ndarray, score: np.ndarray) -> float:
     return float(cands[int(np.argmax(f1))])
 
 
+def _tz(st: Settings, name: str) -> str:
+    """«ТЗ » перед значением порога, пока он не изменён пользователем."""
+    return "" if st.note(name) else "ТЗ "
+
+
+def _mode_thresholds(y: np.ndarray, score: np.ndarray, balanced: float) -> dict[str, float]:
+    """Пороги режимов. sensitive не строже balanced, specific не мягче — режимы упорядочены."""
+    y, score = np.asarray(y, int), np.asarray(score, float)
+    pos, neg = np.sort(score[y == 1]), np.sort(score[y == 0])
+    sens = spec = balanced
+    if len(pos):  # самый строгий порог, при котором находится не меньше SENSITIVE_TARGET нарушений
+        k = int(np.ceil(SENSITIVE_TARGET * len(pos)))
+        sens = min(balanced, float(pos[len(pos) - k]))
+    if len(neg):  # самый мягкий порог, при котором ложных тревог не больше 1 − SPECIFIC_TARGET
+        k = int(np.ceil(SPECIFIC_TARGET * len(neg)))
+        spec = max(balanced, float(np.nextafter(neg[k - 1], np.inf)))
+    return {"sensitive": sens, "balanced": balanced, "specific": spec}
+
+
 class QualityModel:
     def fit(self, feats: list[dict], regions: list[str], labels: list[dict]):
         regions = np.array(regions)
@@ -62,6 +94,7 @@ class QualityModel:
         y_fo = np.array([labels[i].get(LABEL_FOREIGN, 0) for i in sp])
         ridge = _nan([feats[i].get("fo_ridge_p99", np.nan) for i in sp], 0.0)
         self.fo_threshold = _best_threshold(y_fo, ridge)
+        self.fo_thresholds = _mode_thresholds(y_fo, ridge, self.fo_threshold)
         # Второй детектор — объекты ПОВЕРХ столба (замечание экспертов 16.10). Порог консервативный:
         # максимум по нормам обучающей части (ложных тревог на обучении нет), срабатывает только на
         # сильном сигнале — чтобы не потерять предмет, наложенный на позвоночник, не вредя специфичности.
@@ -84,6 +117,7 @@ class QualityModel:
         self.ref_off = -off
         score = self._femur_score(area, off)
         self.femur_threshold = _best_threshold(y, score)
+        self.femur_thresholds = _mode_thresholds(y, score, self.femur_threshold)
 
         # --- калибровка: оценка каждого критерия -> вероятность нарушения (для quality_prob)
         self.calib = {}
@@ -116,41 +150,52 @@ class QualityModel:
         u = np.abs(area - self.area_norm)
         return (_cdf(self.ref_u, u) + _cdf(self.ref_off, -off)) / 2
 
-    def predict(self, feat: dict, region: str) -> dict:
-        """{метка: (флаг 0/1, оценка, объяснение)} по критериям области."""
+    def threshold(self, name: str, mode: str = "balanced") -> float:
+        """Обучаемый порог ("fo" или "femur") для режима; у модели без режимов — порог по F1."""
+        table = getattr(self, f"{name}_thresholds", None)
+        return float(table[mode]) if table else float(getattr(self, f"{name}_threshold"))
+
+    def predict(self, feat: dict, region: str, settings: Settings | None = None) -> dict:
+        """{метка: (флаг 0/1, оценка, объяснение)} по включённым критериям области."""
+        st = settings or _DEFAULT
+        mode_note = "" if st.mode == "balanced" else f", режим «{MODE_TITLES[st.mode]}»"
         out = {}
         if region == "spine":
+            lim, iliac = st.axis_limit_deg, st.iliac_min_frac
             ang = feat.get("axis_chord15_deg", np.nan)
-            out[LABEL_AXIS] = (int(np.isfinite(ang) and ang > AXIS_LIMIT_DEG), float(_nan([ang], 0)[0]),
-                               f"наклон оси {ang:.1f}° (допуск ТЗ {AXIS_LIMIT_DEG:g}°)")
+            out[LABEL_AXIS] = (int(np.isfinite(ang) and ang > lim), float(_nan([ang], 0)[0]),
+                               f"наклон оси {ang:.1f}° (допуск {_tz(st, 'axis_limit_deg')}{lim:g}°){st.note('axis_limit_deg')}")
             fr = feat.get("sp_iliac_frac", np.nan)
-            out[LABEL_POSITIONING] = (int(np.isfinite(fr) and fr < ILIAC_MIN_FRAC), float(-_nan([fr], 0)[0]),
-                                      "гребни подвздошных костей не видны у нижнего края" if np.isfinite(fr) and fr < ILIAC_MIN_FRAC
-                                      else "гребни подвздошных костей видны")
+            out[LABEL_POSITIONING] = (int(np.isfinite(fr) and fr < iliac), float(-_nan([fr], 0)[0]),
+                                      ("гребни подвздошных костей не видны у нижнего края" if np.isfinite(fr) and fr < iliac
+                                       else "гребни подвздошных костей видны") + st.note("iliac_min_frac"))
             r = float(_nan([feat.get("fo_ridge_p99", np.nan)], 0)[0])
             r_in = float(_nan([feat.get("fo_over_spine_p99", np.nan)], 0)[0])
             thr_in = float(getattr(self, "fo_over_spine_threshold", float("inf")))
-            hit_lat = r >= self.fo_threshold
+            thr = self.threshold("fo", st.mode)
+            hit_lat = r >= thr
             hit_in = r_in >= thr_in
             hit = hit_lat or hit_in
             where = "вне столба" if hit_lat else ("поверх позвоночного столба" if hit_in else "")
             out[LABEL_FOREIGN] = (int(hit), r,
-                                  f"тонкие яркие линии вне позвоночника: {r:.3f} (порог {self.fo_threshold:.3f}); "
+                                  f"тонкие яркие линии вне позвоночника: {r:.3f} (порог {thr:.3f}{mode_note}); "
                                   f"поверх столба: {r_in:.3f} (порог {thr_in:.3f})"
                                   + (f" — обнаружено {where}" if hit else ""))
         else:
             b = feat.get("roi_margin_bottom_cm", np.nan)
             h = feat.get("field_height_cm", np.nan)
+            bottom_min, field_min = st.roi_bottom_cm, st.field_min_cm
             rel = feat.get("femur_roi_reliable", 1.0)
-            short_field = bool(np.isfinite(h) and h < FIELD_MIN_CM)
+            short_field = bool(np.isfinite(h) and h < field_min)
             # при ненадёжных ориентирах (короткий скан) решение принимаем ТОЛЬКО по длине поля:
             # отступ до малого вертела не используем (замечание экспертов 16.10)
-            short_bottom = bool(rel and np.isfinite(b) and b < ROI_BOTTOM_CM)
-            # оценка — насколько не хватает до нормы ТЗ (больше — хуже)
+            short_bottom = bool(rel and np.isfinite(b) and b < bottom_min)
+            # оценка — насколько не хватает до нормы ТЗ (больше — хуже); считается по умолчаниям ТЗ,
+            # чтобы вероятность нарушения не зависела от пользовательских порогов
             deficit = max(ROI_BOTTOM_CM - float(_nan([b], 0)[0]), FIELD_MIN_CM - float(_nan([h], FIELD_MIN_CM)[0]))
             out[LABEL_ROI] = (int(short_bottom or short_field), deficit,
-                              f"ниже малого вертела {b:.1f} см (норма ТЗ ≥ {ROI_BOTTOM_CM:g}); длина скана {h:.1f} см "
-                              f"(минимум {FIELD_MIN_CM:g}); сверху {feat.get('roi_margin_top_cm', np.nan):.1f}, "
+                              f"ниже малого вертела {b:.1f} см (норма {_tz(st, 'roi_bottom_cm')}≥ {bottom_min:g}){st.note('roi_bottom_cm')}; длина скана "
+                              f"{h:.1f} см (минимум {field_min:g}){st.note('field_min_cm')}; сверху {feat.get('roi_margin_top_cm', np.nan):.1f}, "
                               f"медиально {feat.get('roi_margin_medial_cm', np.nan):.1f} см"
                               + ("; скан слишком короткий — бедро не помещается" if short_field else "")
                               + ("; ориентиры ненадёжны — решение только по длине скана" if not rel else ""))
@@ -160,11 +205,13 @@ class QualityModel:
             s = float(self._femur_score(np.array([area]), np.array([off]))[0])
             kind = "переротация (контур гладкий)" if area < self.area_norm else "недоротация (малый вертел крупный)"
             isch = feat.get("femur_ischium_frac", np.nan)
-            no_ischium = bool(np.isfinite(isch) and isch < ISCHIUM_MIN_FRAC)
-            rotated = s >= self.femur_threshold
+            no_ischium = bool(np.isfinite(isch) and isch < st.ischium_min_frac)
+            fthr = self.threshold("femur", st.mode)
+            rotated = s >= fthr
             out[LABEL_POSITIONING] = (int(rotated or no_ischium), s,
                                       f"малый вертел {area_mm2:.0f} мм² (норма ~{np.expm1(self.area_norm):.0f}), офсет головки {off:.0f} мм; "
-                                      f"оценка ротации {s:.2f} (порог {self.femur_threshold:.2f})"
+                                      f"оценка ротации {s:.2f} (порог {fthr:.2f}{mode_note})"
                                       + (f"; вероятно {kind}" if rotated else "")
-                                      + ("; седалищная кость не попала в кадр" if no_ischium else ""))
-        return out
+                                      + ("; седалищная кость не попала в кадр" if no_ischium else "")
+                                      + st.note("ischium_min_frac"))
+        return {L: v for L, v in out.items() if st.criteria.get(CRITERION_KEY[(region, L)], True)}
