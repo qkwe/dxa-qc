@@ -59,6 +59,7 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
     small = _font(max(11, img.width // 70))
     bad = any(flag for flag, _, _ in crit.values())
     notes = []  # пояснения под легендой (жёлтым): почему чего-то нет на картинке
+    axis_marks = None
     if it.region == "spine":
         ys, xs = axis.centerline(it.array, spacing)
         if len(ys):
@@ -67,15 +68,10 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
             bot = (np.median(xs[-n:]) * scale, np.median(ys[-n:]) * scale)
             ok = not crit.get("Не выравнена ось позвоночника", (0,))[0]
             lw = max(3, img.width // 220)
-            # участки средней линии столба, по которым считаются центры крайних позвонков (верхние и нижние
-            # 15%) — по ним видно, правильно ли найден позвоночник; середина линии на угол не влияет
-            for seg in (slice(None, n), slice(-n, None)):
-                d.line([(x * scale, y * scale) for x, y in zip(xs[seg], ys[seg])], fill=(200, 200, 200), width=max(2, lw // 2))
             # ось как на рис. 2 ТЗ: через центры верхних и нижних позвонков (медианы крайних 15% линии)
             d.line([bot, top], fill=GREEN if ok else RED, width=lw)
             d.line([bot, (bot[0], top[1])], fill=CYAN, width=max(2, lw // 2))
-            for px, py in (top, bot):
-                d.ellipse([px - 2 * lw, py - 2 * lw, px + 2 * lw, py + 2 * lw], outline=GREEN if ok else RED, width=lw)
+            axis_marks = (top, bot, GREEN if ok else RED, lw)  # рисуются в конце — поверх легенды
             notes.append("ось — через центры крайних позвонков (кружки), голубая — вертикаль")
             ang = feats.get("axis_chord15_deg")
             if ang is not None and np.isfinite(ang):
@@ -156,6 +152,12 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
         d.rectangle([4, y - 2, 12 + d.textlength(text, font=f), y + f.size + 4], fill=(0, 0, 0))
         d.text((8, y), text, font=f, fill=color)
         y += f.size + 8
+    # ось и центры крайних позвонков — поверх легенды: верх столба часто под ней
+    if axis_marks:
+        top, bot, color, lw = axis_marks
+        d.line([bot, top], fill=color, width=lw)
+        for px, py in (top, bot):
+            d.ellipse([px - 2 * lw, py - 2 * lw, px + 2 * lw, py + 2 * lw], outline=color, width=lw)
     # рамки найденных предметов — поверх легенды: косточки белья часто вверху кадра, под ней
     if show_foreign and it.region == "spine":
         for k, box in enumerate(it.result.get("foreign_boxes", [])):

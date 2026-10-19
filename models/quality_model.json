@@ -1,15 +1,15 @@
 {
- "trained": "2026-10-19T14:45:09",
+ "trained": "2026-10-19T19:54:08",
  "n_images": 252,
  "n_labeled": 249,
- "fo_threshold": 0.027859590951067468,
+ "fo_threshold": 0.02804885554483371,
  "fo_over_spine_threshold": 0.027420606106020286,
  "femur_threshold": 0.6016333333333334,
  "area_norm": 1.949685706087115,
  "fo_thresholds": {
-  "sensitive": 0.027859590951067468,
-  "balanced": 0.027859590951067468,
-  "specific": 0.02814813821340249
+  "sensitive": 0.02804885554483371,
+  "balanced": 0.02804885554483371,
+  "specific": 0.02804885554483371
  },
  "femur_thresholds": {
   "sensitive": 0.4666666666666667,
