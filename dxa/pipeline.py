@@ -23,7 +23,8 @@ import joblib
 import numpy as np
 import pydicom
 
-from . import features, region
+from . import features, region, spine
+from .data import LABEL_FOREIGN
 from .data import pixel_spacing
 from .settings import Settings
 
@@ -235,17 +236,16 @@ class Service:
                 if series_dir and not it.error and not it.duplicate_of:
                     try:
                         from . import report
-                        png, peak = report.write_series(it, Path(series_dir))
-                        rows[-1]["overlay"] = Path(png).relative_to(Path(series_dir)).as_posix()
-                        if peak:
-                            rows[-1]["overlay_peak"] = Path(peak).relative_to(Path(series_dir)).as_posix()
+                        files = report.write_series(it, Path(series_dir))
+                        for key, path in files.items():  # overlay и варианты: overlay_peak, overlay_fo
+                            rows[-1][key] = Path(path).relative_to(Path(series_dir)).as_posix()
                     except Exception as e:
                         rows[-1]["error"] = (rows[-1].get("error") or "") + f" доп. серия: {e}"
             # копия показывает ту же картинку, что и исходный снимок (доп. серия пишется один раз)
             source = {r["image_uid"]: r for r in rows[first:] if r.get("overlay")}
             for r in rows[first:]:
                 if r["duplicate_of"] and r["duplicate_of"] in source:
-                    for key in ("overlay", "overlay_peak"):
+                    for key in ("overlay", "overlay_peak", "overlay_fo"):
                         if key in source[r["duplicate_of"]]:
                             r[key] = source[r["duplicate_of"]][key]
             if progress:
@@ -262,6 +262,11 @@ class Service:
         it.result["spacing"] = spacing
         it.result["criteria"] = self.model.predict(feats, it.region, st)
         it.result["settings_note"] = settings_note(st)
+        # где именно найдены посторонние предметы — для разметки (только если детектор сработал)
+        if it.region == "spine" and it.result["criteria"].get(LABEL_FOREIGN, (0,))[0]:
+            it.result["foreign_boxes"] = spine.foreign_boxes(
+                it.array, spacing, self.model.threshold("fo", st.mode),
+                float(getattr(self.model, "fo_over_spine_threshold", float("inf"))))
         it.result["probs"], it.result["quality_prob"] = self.model.probabilities(it.result["criteria"], it.region)
 
     @staticmethod

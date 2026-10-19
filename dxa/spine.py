@@ -39,13 +39,54 @@ def _ridges(values: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def measure(array: np.ndarray, spacing: Spacing) -> dict:
+    return _analyse(array, spacing)[0]
+
+
+def foreign_boxes(array: np.ndarray, spacing: Spacing, thr_lateral: float, thr_over: float,
+                  limit: int = 4) -> list[dict]:
+    """Где детектор посторонних предметов увидел сигнал: рамки (x0, y0, x1, y1) в пикселях снимка.
+
+    Те же карты, что в measure(): отклик тонкой яркой линии вне столба (r1) и поверх столба (r1 − r3).
+    Пиксели выше порога решения склеиваются в объекты. Чтобы не обводить шум (отдельные пиксели
+    чуть выше порога), показываются: самый сильный объект всегда (детектор сработал — нужно показать
+    где), остальные — если не слабее 60% самого сильного и выше порога в 1.5 раза. На обучающем
+    наборе предметы дают отклик в 2–8 раз выше порога, шум — в 1.1–1.4 раза. «Поверх столба» —
+    только если сработал именно этот детектор. Только для разметки, на решение не влияет."""
+    maps = _analyse(array, spacing)[1]
+    if not maps:
+        return []
+    detectors = [("вне столба", maps["r1"], maps["area"], thr_lateral)]
+    zone = maps["inside_zone"]
+    if zone.any() and np.percentile(maps["thin_ridge"][zone], 99.5) >= thr_over:
+        detectors.append(("поверх столба", maps["thin_ridge"], zone, thr_over))
+    out = []
+    for where, strength, zone, thr in detectors:
+        hits = (strength >= thr) & zone
+        if not hits.any():
+            continue
+        lab, _ = ndimage.label(ndimage.binary_dilation(hits, iterations=3))
+        found = []
+        for k, sl in enumerate(ndimage.find_objects(lab), start=1):
+            comp = (lab[sl] == k) & hits[sl]
+            if comp.sum() >= 3:  # одиночные пиксели — шум
+                y, x = sl
+                found.append(dict(box=(x.start, y.start, x.stop, y.stop), where=where,
+                                  strength=float(strength[sl][comp].max()), ratio=float(strength[sl][comp].max() / thr)))
+        found.sort(key=lambda f: -f["strength"])
+        if found:
+            top = found[0]["strength"]
+            out += [found[0]] + [f for f in found[1:] if f["strength"] >= 0.6 * top and f["ratio"] >= 1.5]
+    return sorted(out, key=lambda f: -f["ratio"])[:limit]
+
+
+def _analyse(array: np.ndarray, spacing: Spacing) -> tuple[dict, dict]:
     values = axis.normalize(array)
     rows, cols = values.shape
     sx, sy = spacing
     valid = axis.valid_rows(values)
     vr = np.nonzero(valid)[0]
     if len(vr) < 20:
-        return {}
+        return {}, {}
     top, bottom = int(vr[0]), int(vr[-1])
     ys, xs, width = _column_center(array, spacing)
     center = float(np.median(xs)) if len(xs) else cols / 2
@@ -118,6 +159,7 @@ def measure(array: np.ndarray, spacing: Spacing) -> dict:
     inside_zone = (~lateral) & valid[:, None] & inside
     fo_over_spine_score = float(np.percentile(thin_ridge[inside_zone], 99.5)) if inside_zone.any() else 0.0
 
+    maps = dict(r1=r1, area=area, thin_ridge=thin_ridge, inside_zone=inside_zone)
     return dict(
         sp_iliac_frac=iliac_frac,
         sp_iliac_height_mm=iliac_height_mm,
@@ -129,4 +171,4 @@ def measure(array: np.ndarray, spacing: Spacing) -> dict:
         fo_spots=float(spots),
         fo_ridge_p99=fo_score,
         fo_over_spine_p99=fo_over_spine_score,
-    )
+    ), maps

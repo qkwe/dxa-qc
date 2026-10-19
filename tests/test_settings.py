@@ -163,3 +163,16 @@ def test_region_by_anatomy_for_rescaled_images():
     for arr, want in ((spine, 1), (femur, 0)):
         big = np.asarray(Image.fromarray(arr.astype(np.uint8)).resize((900, 900)))
         assert (region.spine_probability(m, big) >= 0.5) == bool(want)
+
+
+@pytest.mark.skipif(not MODEL.exists() or not Path("C:/dxa_test").exists(), reason="нет модели или тестового фрагмента")
+def test_foreign_objects_outlined(tmp_path):
+    """Позвоночник из тестового фрагмента с найденными предметами: рамки есть, вариант картинки пишется."""
+    from dxa.pipeline import Service
+
+    rows = Service(str(MODEL)).process("C:/dxa_test", tmp_path / "s")
+    spine = [r for r in rows if "Присутствуют посторонние предметы" in (r["violation_type"] or "")]
+    assert spine and all(r.get("overlay_fo") for r in spine)
+    assert all((tmp_path / "s" / r["overlay_fo"]).exists() for r in spine)
+    clean = [r for r in rows if "Присутствуют посторонние предметы" not in (r["violation_type"] or "")]
+    assert not any(r.get("overlay_fo") for r in clean)  # без находки — без рамок

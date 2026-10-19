@@ -22,6 +22,7 @@ from . import axis, roi
 SC_CLASS = "1.2.840.10008.5.1.4.1.1.7"        # Secondary Capture Image Storage
 SR_CLASS = "1.2.840.10008.5.1.4.1.1.88.11"    # Basic Text SR Storage
 RED, GREEN, YELLOW, CYAN = (230, 50, 40), (60, 200, 80), (255, 215, 0), (0, 190, 255)
+ORANGE = (255, 140, 0)
 LT_VISIBLE_MM = 1.0   # выступ малого вертела меньше этого — «контур гладкий», вершину не рисуем
 
 
@@ -44,9 +45,10 @@ def _label(d: ImageDraw.ImageDraw, xy, text: str, font, color):
     d.text((x, y), text, font=font, fill=color)
 
 
-def overlay(it, show_peak: bool = False) -> P.Image:
-    """Снимок с разметкой. show_peak — отметить наибольший выступ медиального контура бедра
-    (в интерфейсе включается галочкой; по умолчанию только сам контур — меньше надписей)."""
+def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
+    """Снимок с разметкой. В интерфейсе включаются галочками (по умолчанию — меньше надписей):
+    show_peak — наибольший выступ медиального контура бедра; show_foreign — рамки вокруг найденных
+    посторонних предметов на снимке позвоночника."""
     a = axis.normalize(it.array)
     scale = 3
     img = P.fromarray((a * 255).astype(np.uint8)).convert("RGB").resize((a.shape[1] * scale, a.shape[0] * scale))
@@ -140,6 +142,12 @@ def overlay(it, show_peak: bool = False) -> P.Image:
         d.rectangle([4, y - 2, 12 + d.textlength(text, font=f), y + f.size + 4], fill=(0, 0, 0))
         d.text((8, y), text, font=f, fill=color)
         y += f.size + 8
+    # рамки найденных предметов — поверх легенды: косточки белья часто вверху кадра, под ней
+    if show_foreign and it.region == "spine":
+        for k, box in enumerate(it.result.get("foreign_boxes", [])):
+            x0, y0, x1, y1 = [v * scale for v in box["box"]]
+            d.rectangle([x0 - 4, y0 - 4, x1 + 4, y1 + 4], outline=ORANGE, width=3)
+            _label(d, (x0 - 4, y1 + 8), f"предмет {k + 1} ({box['where']})", small, ORANGE)
     d.text((8, img.height - f.size - 8), "ИИ-контроль качества DXA · не для диагностики", font=_font(max(11, img.width // 70)),
            fill=(200, 200, 200))
     return img
@@ -220,20 +228,24 @@ _REGION = {"spine": "Поясничный отдел позвоночника", 
 _SIDE = {"l": "левое", "r": "правое"}
 
 
-def write_series(it, out_dir: Path) -> tuple[Path, Path | None]:
-    """PNG + DICOM SC + DICOM SR; для бедра — ещё вариант PNG с отмеченным наибольшим выступом контура."""
+def write_series(it, out_dir: Path) -> dict[str, Path]:
+    """PNG + DICOM SC + DICOM SR. Варианты PNG для галочек интерфейса: бедро — с наибольшим выступом
+    контура (overlay_peak), позвоночник с найденными предметами — с рамками вокруг них (overlay_fo)."""
     out_dir = Path(out_dir) / _safe(it.study_uid)
     out_dir.mkdir(parents=True, exist_ok=True)
     img = overlay(it)
     stem = _safe(it.image_uid)[-40:]
     img.save(out_dir / f"{stem}.png")
-    peak = None
+    files = {"overlay": out_dir / f"{stem}.png"}
     if it.region == "femur":
-        peak = out_dir / f"{stem}_peak.png"
-        overlay(it, show_peak=True).save(peak)
+        files["overlay_peak"] = out_dir / f"{stem}_peak.png"
+        overlay(it, show_peak=True).save(files["overlay_peak"])
+    if it.result.get("foreign_boxes"):
+        files["overlay_fo"] = out_dir / f"{stem}_fo.png"
+        overlay(it, show_foreign=True).save(files["overlay_fo"])
     secondary_capture(it, img).save_as(out_dir / f"{stem}_SC.dcm", enforce_file_format=True)
     text_sr(it).save_as(out_dir / f"{stem}_SR.dcm", enforce_file_format=True)
-    return out_dir / f"{stem}.png", peak
+    return files
 
 
 def _safe(s: str) -> str:
