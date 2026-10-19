@@ -5,6 +5,7 @@
 GET  /                         — веб-интерфейс
 GET  /health                   — проверка готовности
 GET  /api/settings             — настройки по умолчанию, пределы и честные метрики режимов
+GET  /metrics, /api/metrics    — страница и данные метрик: CV с 95% ДИ, режимы, поверка, стенд предметов
 POST /api/jobs                 — загрузка zip / DICOM-файлов (form-data: files, необязательно settings — JSON)
 POST /api/jobs/path            — обработка каталога на сервере: {"path": "/data/input", "settings": {...}}
 GET  /api/jobs/{id}            — статус и строки результата
@@ -127,6 +128,23 @@ def _upload_path(root: Path, filename: str | None) -> Path:
 @app.get("/", response_class=HTMLResponse)
 def index():
     return (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+
+
+@app.get("/metrics", response_class=HTMLResponse)
+def metrics_page():
+    return (Path(__file__).parent / "static" / "metrics.html").read_text(encoding="utf-8")
+
+
+@app.get("/api/metrics")
+def metrics():
+    """Честные метрики (out/metrics_final.json), поверка измерителя и стенд посторонних предметов."""
+    out = {}
+    for key, name in (("metrics", METRICS.name), ("validation", "validation.json"), ("foreign_stand", "foreign_stand.json")):
+        try:
+            out[key] = json.loads((METRICS.parent / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            out[key] = None
+    return out
 
 
 @app.get("/health")

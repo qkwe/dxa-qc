@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DXA-QC — метрики качества</title>
+<style>
+  :root { --face: #d4d0c8; --light: #ffffff; --shadow: #808080; --dark: #404040; --title1: #0a246a; --title2: #a6caf0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #3a6ea5; font: 12px Tahoma, Verdana, Arial, sans-serif; color: #000; }
+  .window { margin: 8px; background: var(--face); border: 2px solid; border-color: var(--light) var(--dark) var(--dark) var(--light); }
+  .titlebar { background: linear-gradient(90deg, var(--title1), var(--title2)); color: #fff; font-weight: bold; padding: 3px 6px; }
+  .toolbar { padding: 4px 6px; border-bottom: 1px solid var(--shadow); }
+  a.btn { font: 11px Tahoma, sans-serif; background: var(--face); color: #000; padding: 3px 10px; text-decoration: none;
+          border: 2px solid; border-color: var(--light) var(--dark) var(--dark) var(--light); display: inline-block; }
+  .body { padding: 8px 10px; max-width: 1100px; }
+  fieldset { border: 1px solid var(--shadow); margin: 0 0 10px; padding: 8px; background: var(--face); }
+  legend { padding: 0 4px; font-weight: bold; }
+  .wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  th, td { border: 1px solid #b0b0b0; padding: 3px 6px; text-align: left; white-space: nowrap; }
+  th { background: #ece9d8; font-weight: normal; }
+  td.num { text-align: right; font-family: "Courier New", monospace; }
+  tr.total td { font-weight: bold; background: #f5f5ff; }
+  .note { color: #303030; margin: 6px 0 0; line-height: 1.4; }
+  code { background: #fff; padding: 0 3px; border: 1px solid #c0c0c0; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">DXA-QC — метрики качества (честная оценка)</div>
+  <div class="toolbar"><a class="btn" href="./">← К обработке исследований</a></div>
+  <div class="body">
+    <fieldset>
+      <legend>Как получены цифры</legend>
+      <div class="note">
+        Вложенная кросс-валидация по исследованиям (снимки одного пациента не попадают одновременно в обучение и
+        проверку), 5 фолдов × 5 повторов, все пороги и калибровка подбираются только на обучающей части фолда.
+        95% доверительные интервалы — бутстрэп по исследованиям. Оценка запускает тот же код, что и сервис.
+        Проверить самостоятельно: <code>./run.sh check /путь/к/НД_для_обучения</code> — обучение с нуля, метрики,
+        поверка, стенд и проверка формата выдачи, итог в <code>verification/verification.md</code>.
+      </div>
+    </fieldset>
+    <fieldset><legend>По критериям ТЗ</legend><div class="wrap" id="crit">загрузка...</div>
+      <div class="note">Метрики организатора — ROC-AUC и F1. ROC-AUC по колонке <code>quality_prob</code> («Разъяснения V2», вопрос 8).</div></fieldset>
+    <fieldset><legend>Режимы чувствительности (настройки сервиса)</legend><div class="wrap" id="modes">—</div></fieldset>
+    <fieldset><legend>Поверка измерителя</legend><div class="wrap" id="valid">—</div>
+      <div class="note">Снимок поворачивается или обрезается на известную величину; измеренное изменение сравнивается с заданным.</div></fieldset>
+    <fieldset><legend>Посторонние предметы на кости (стенд)</legend><div class="wrap" id="stand">—</div>
+      <div class="note">Настоящие предметы с размеченных снимков перенесены на нормальные снимки (с нормировкой как у аппарата);
+        детектор обучен на одной половине норм, проверен на другой. Это оценка, а не клиническая метрика: реальных
+        примеров предметов на кости в наборе нет.</div></fieldset>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const f2 = (x) => (x == null || isNaN(x) ? "—" : Number(x).toFixed(2));
+const f3 = (x) => (x == null || isNaN(x) ? "—" : Number(x).toFixed(3));
+const ci = (c) => (c ? ` [${f2(c[0])}; ${f2(c[1])}]` : "");
+const pc = (x) => (x == null ? "—" : Math.round(100 * x) + "%");
+const NAMES = {"spine": "Позвоночник", "femur": "Бедро", "все снимки": "Все снимки"};
+
+fetch("api/metrics").then((r) => r.json()).then((m) => {
+  const rep = m.metrics || {};
+  let rows = "";
+  for (const [k, v] of Object.entries(rep)) {
+    if (!v || typeof v !== "object" || !("f1" in v) || !v.ci) continue;
+    const [region, crit] = k.split(": ");
+    const total = crit.startsWith("качество");
+    rows += `<tr class="${total ? "total" : ""}"><td>${NAMES[region] || region}</td><td>${total ? "Есть нарушение (итог)" : crit}</td>` +
+      `<td class="num">${v.n}</td><td class="num">${v.positives}</td><td class="num">${f3(v.auc)}${ci(v.ci.auc)}</td>` +
+      `<td class="num">${f3(v.f1)}${ci(v.ci.f1)}</td><td class="num">${f2(v.sens)}</td><td class="num">${f2(v.spec)}</td></tr>`;
+  }
+  const q = rep["quality_prob ROC-AUC: все снимки"];
+  if (q) rows += `<tr class="total"><td>Все снимки</td><td>quality_prob (вероятность нарушения)</td><td></td><td></td>` +
+    `<td class="num">${f3(q.auc)}${ci(q.ci)}</td><td></td><td></td><td></td></tr>`;
+  if (rep["macro-F1 по типам нарушений"] != null) rows += `<tr class="total"><td></td><td>macro-F1 по типам нарушений</td><td></td><td></td><td></td>` +
+    `<td class="num">${f3(rep["macro-F1 по типам нарушений"])}</td><td></td><td></td></tr>`;
+  $("crit").innerHTML = rows ? `<table><tr><th>Область</th><th>Критерий</th><th>Снимков</th><th>Нарушений</th>` +
+    `<th>ROC-AUC [95% ДИ]</th><th>F1 [95% ДИ]</th><th>Чувств.</th><th>Специф.</th></tr>${rows}</table>` : "метрики не найдены";
+
+  const modes = rep["режимы"];
+  const TITLES = {sensitive: "высокая чувствительность", balanced: "баланс (по умолчанию)", specific: "высокая специфичность"};
+  if (modes) $("modes").innerHTML = `<table><tr><th>Режим</th><th>Находит брака [95% ДИ]</th><th>Верно оставляет нормы [95% ДИ]</th><th>F1</th></tr>` +
+    Object.entries(modes).map(([md, v]) => { const a = v["все снимки: качество (есть нарушение)"];
+      return `<tr><td>${TITLES[md] || md}</td><td class="num">${f2(a.sens)}${ci(a.ci.sens)}</td><td class="num">${f2(a.spec)}${ci(a.ci.spec)}</td><td class="num">${f3(a.f1)}</td></tr>`; }).join("") + "</table>";
+
+  const val = m.validation;
+  if (val) $("valid").innerHTML = `<table><tr><th>Величина</th><th>Проверок</th><th>Средняя ошибка</th><th>В допуске ТЗ</th></tr>` +
+    Object.entries(val).map(([k, v]) => { const deg = k.includes("°");
+      return `<tr><td>${k}</td><td class="num">${v.n}</td><td class="num">${deg ? f2(v.mean) + "°" : (100 * v.mean).toFixed(1) + "%"}</td>` +
+             `<td class="num">${pc(deg ? v.within_3deg : v.within_5pct)} (допуск ${deg ? "3°" : "5%"})</td></tr>`; }).join("") + "</table>";
+
+  const s = m.foreign_stand;
+  if (s) $("stand").innerHTML = `<table><tr><th>Где лежит предмет</th><th>Найдено</th><th>Перенесённых предметов</th></tr>` +
+    Object.entries(s.found).map(([z, v]) => `<tr><td>${z}</td><td class="num">${pc(v.rate)}</td><td class="num">${v.n}</td></tr>`).join("") +
+    `<tr class="total"><td>Ложные тревоги на чистых нормах</td><td class="num">${pc(s.false_alarms_on_normals)}</td><td class="num">${s.normals} норм</td></tr></table>`;
+}).catch((e) => { $("crit").textContent = "не удалось загрузить метрики: " + e; });
+</script>
+</body>
+</html>

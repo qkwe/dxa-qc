@@ -1,6 +1,8 @@
 .venv
 out
 !out/metrics_final.json
+!out/validation.json
+!out/foreign_stand.json
 experiments
 __pycache__
 **/__pycache__

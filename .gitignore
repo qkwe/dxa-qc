@@ -10,6 +10,8 @@ out/*
 !out/validation.json
 !out/metrics_table.md
 !out/metrics_table.csv
+!out/foreign_stand.json
+!out/verification.md
 colab/*.npz
 *.pkl
 *.npz

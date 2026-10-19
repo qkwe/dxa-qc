@@ -21,9 +21,9 @@ RUN pip install --upgrade pip==25.0.1 && pip install -r requirements.txt
 
 COPY models ./models
 COPY dxa ./dxa
-COPY train.py evaluate_final.py ./
+COPY train.py evaluate_final.py validate_measures.py validate_foreign_object.py make_metrics_table.py verify.py ./
 # честные метрики режимов чувствительности — показываются в настройках веб-интерфейса
-COPY out/metrics_final.json ./out/metrics_final.json
+COPY out/metrics_final.json out/validation.json out/foreign_stand.json ./out/
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD curl -fs http://localhost:8000/health || exit 1
