@@ -176,3 +176,42 @@ def test_foreign_objects_outlined(tmp_path):
     assert all((tmp_path / "s" / r["overlay_fo"]).exists() for r in spine)
     clean = [r for r in rows if "Присутствуют посторонние предметы" not in (r["violation_type"] or "")]
     assert not any(r.get("overlay_fo") for r in clean)  # без находки — без рамок
+
+
+@pytest.mark.skipif(not MODEL.exists() or not Path("C:/dxa_test").exists(), reason="нет модели или тестового фрагмента")
+def test_rescaled_copies_give_same_verdicts(tmp_path):
+    """Копии ×3 и ×0.5 (верный тег размера, без подсказок в именах) — те же вердикты, что у оригиналов:
+    размер пикселя принимается 0.1–1.5 мм, снимок пересчитывается к родному пикселю 0.6 мм."""
+    import pydicom
+    from PIL import Image
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+    from dxa.pipeline import Service
+
+    svc = Service(str(MODEL))
+    orig = {}
+    for r in svc.process("C:/dxa_test"):
+        key = ("spine" if "ПОП" in r["path_to_study"] else "femur", r["side"])
+        orig[key] = r["violation_type"]
+    n = 0
+    for p in sorted(Path("C:/dxa_test").rglob("*.dcm")):
+        ds = pydicom.dcmread(p)
+        arr = ds.pixel_array.astype(np.uint8)
+        for k in (3.0, 0.5):
+            a = np.asarray(Image.fromarray(arr).resize((int(arr.shape[1] * k), int(arr.shape[0] * k)), Image.BILINEAR))
+            d = ds.copy()
+            for t in ("BodyPartExamined", "SeriesDescription", "ProtocolName", "StudyDescription", "ImageLaterality", "Laterality"):
+                if t in d:
+                    delattr(d, t)
+            d.SOPInstanceUID = generate_uid()
+            d.file_meta.MediaStorageSOPInstanceUID = d.SOPInstanceUID
+            d.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+            d.Rows, d.Columns = a.shape
+            d.PixelData = a.tobytes()
+            n += 1
+            d.save_as(tmp_path / f"IM{n:04d}.dcm", enforce_file_format=True)
+    rows = svc.process(tmp_path)
+    assert len(rows) == 2 * len(orig)
+    for r in rows:
+        region = "spine" if r["anatomical_region"].startswith("Пояснич") else "femur"
+        assert r["violation_type"] == orig[(region, r["side"])], r["path_to_study"]

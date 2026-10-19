@@ -43,14 +43,15 @@ def measure(array: np.ndarray, spacing: Spacing) -> dict:
 
 
 def foreign_boxes(array: np.ndarray, spacing: Spacing, thr_lateral: float, thr_over: float,
-                  limit: int = 4) -> list[dict]:
+                  limit: int = 6) -> list[dict]:
     """Где детектор посторонних предметов увидел сигнал: рамки (x0, y0, x1, y1) в пикселях снимка.
 
     Те же карты, что в measure(): отклик тонкой яркой линии вне столба (r1) и поверх столба (r1 − r3).
     Пиксели выше порога решения склеиваются в объекты. Чтобы не обводить шум (отдельные пиксели
     чуть выше порога), показываются: самый сильный объект всегда (детектор сработал — нужно показать
-    где), остальные — если не слабее 60% самого сильного и выше порога в 1.5 раза. На обучающем
-    наборе предметы дают отклик в 2–8 раз выше порога, шум — в 1.1–1.4 раза. «Поверх столба» —
+    где), остальные — если выше порога в 1.5 раза (косточки белья с обеих сторон бывают разной
+    яркости — сравнивать с самым сильным нельзя). На обучающем наборе предметы дают отклик в 2–8 раз
+    выше порога, шум — в 1.1–1.4 раза. «Поверх столба» —
     только если сработал именно этот детектор. Только для разметки, на решение не влияет."""
     maps = _analyse(array, spacing)[1]
     if not maps:
@@ -74,8 +75,7 @@ def foreign_boxes(array: np.ndarray, spacing: Spacing, thr_lateral: float, thr_o
                                   strength=float(strength[sl][comp].max()), ratio=float(strength[sl][comp].max() / thr)))
         found.sort(key=lambda f: -f["strength"])
         if found:
-            top = found[0]["strength"]
-            out += [found[0]] + [f for f in found[1:] if f["strength"] >= 0.6 * top and f["ratio"] >= 1.5]
+            out += [found[0]] + [f for f in found[1:] if f["ratio"] >= 1.5]
     return sorted(out, key=lambda f: -f["ratio"])[:limit]
 
 

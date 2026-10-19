@@ -66,8 +66,17 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
             top = (np.median(xs[:n]) * scale, np.median(ys[:n]) * scale)
             bot = (np.median(xs[-n:]) * scale, np.median(ys[-n:]) * scale)
             ok = not crit.get("Не выравнена ось позвоночника", (0,))[0]
-            d.line([bot, top], fill=GREEN if ok else RED, width=4)
-            d.line([bot, (bot[0], top[1])], fill=CYAN, width=2)
+            lw = max(3, img.width // 220)
+            # участки средней линии столба, по которым считаются центры крайних позвонков (верхние и нижние
+            # 15%) — по ним видно, правильно ли найден позвоночник; середина линии на угол не влияет
+            for seg in (slice(None, n), slice(-n, None)):
+                d.line([(x * scale, y * scale) for x, y in zip(xs[seg], ys[seg])], fill=(200, 200, 200), width=max(2, lw // 2))
+            # ось как на рис. 2 ТЗ: через центры верхних и нижних позвонков (медианы крайних 15% линии)
+            d.line([bot, top], fill=GREEN if ok else RED, width=lw)
+            d.line([bot, (bot[0], top[1])], fill=CYAN, width=max(2, lw // 2))
+            for px, py in (top, bot):
+                d.ellipse([px - 2 * lw, py - 2 * lw, px + 2 * lw, py + 2 * lw], outline=GREEN if ok else RED, width=lw)
+            notes.append("ось — через центры крайних позвонков (кружки), голубая — вертикаль")
             ang = feats.get("axis_chord15_deg")
             if ang is not None and np.isfinite(ang):
                 # подпись у середины линии: вверху кадра её закрывает легенда
@@ -136,7 +145,12 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
     lines = [("ЕСТЬ НАРУШЕНИЕ" if bad else "КАЧЕСТВЕННОЕ", RED if bad else GREEN)]
     lines += [(f"{'[НАРУШЕНИЕ]' if flag else '[норма]'} {name}", RED if flag else GREEN) for name, (flag, _, _) in crit.items()]
     lines += [(n, YELLOW) for n in notes]
-    f = _font(max(14, img.width // 45))
+    # шрифт легенды — по ширине кадра: самая длинная строка должна влезть (узкий снимок бедра)
+    size = max(14, img.width // 45)
+    f = _font(size)
+    while size > 9 and max(d.textlength(t, font=f) for t, _ in lines) > img.width - 20:
+        size -= 1
+        f = _font(size)
     y = 6
     for text, color in lines:
         d.rectangle([4, y - 2, 12 + d.textlength(text, font=f), y + f.size + 4], fill=(0, 0, 0))
@@ -147,7 +161,8 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
         for k, box in enumerate(it.result.get("foreign_boxes", [])):
             x0, y0, x1, y1 = [v * scale for v in box["box"]]
             d.rectangle([x0 - 4, y0 - 4, x1 + 4, y1 + 4], outline=ORANGE, width=3)
-            _label(d, (x0 - 4, y1 + 8), f"предмет {k + 1} ({box['where']})", small, ORANGE)
+            _label(d, (x0 - 4, y1 + 8), f"предмет {k + 1}" + (" (поверх столба)" if box["where"] == "поверх столба" else ""),
+                   small, ORANGE)
     d.text((8, img.height - f.size - 8), "ИИ-контроль качества DXA · не для диагностики", font=_font(max(11, img.width // 70)),
            fill=(200, 200, 200))
     return img

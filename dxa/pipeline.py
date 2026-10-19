@@ -36,6 +36,8 @@ SIDE_NAMES = {"l": "левое", "r": "правое"}
 # Область без тегов: у аппарата организатора снимок позвоночника 300 пикселей в ширину, бедра — 248–280
 # (252 из 252 снимков обучения). Порог — середина промежутка; меняется в настройках (spine_min_width_px).
 SPINE_MIN_WIDTH_PX = Settings().spine_min_width_px
+# пиксель аппарата организатора ~0.6 мм; снимки вне этого диапазона пересчитываются к 0.6 мм перед измерениями
+NATIVE_PIXEL_MM = (0.4, 1.0)   # = прежний диапазон тега: на снимках аппарата организатора ничего не меняется
 
 # подсказки из тегов и имён файлов (в наборе организатора: ПОП, ЛПОБ, ППОБ)
 _SPINE_HINT = re.compile(r"(ПОП|позвон|spine|l1-?l4|lumbar)", re.I)
@@ -252,9 +254,27 @@ class Service:
                 progress(n + 1, len(by_study))
         return rows
 
+    @staticmethod
+    def _to_native(it: Item, spacing) -> tuple[float, float]:
+        """Снимок другого разрешения — к пикселю аппарата организатора (~0.6 мм). Фильтры детекторов
+        (гребни, контуры) настроены в пикселях этого разрешения; на снимке ×3 они «видят» иначе даже при
+        верном размере пикселя. Снимки с пикселем 0.4–1.0 мм не трогаются — ответы на них прежние."""
+        sx, sy = spacing
+        if NATIVE_PIXEL_MM[0] <= sx <= NATIVE_PIXEL_MM[1] and NATIVE_PIXEL_MM[0] <= sy <= NATIVE_PIXEL_MM[1]:
+            return spacing
+        from PIL import Image as PImage
+
+        rows, cols = it.array.shape
+        new = (max(int(round(cols * sx / 0.6)), 16), max(int(round(rows * sy / 0.6)), 16))
+        arr = np.asarray(PImage.fromarray(it.array.astype(np.float32)).resize(new, PImage.BILINEAR))
+        it.array = np.rint(arr).astype(it.array.dtype) if np.issubdtype(it.array.dtype, np.integer) else arr
+        it.result["resampled"] = f"пересчитан к пикселю 0.6 мм (было {sx:.2f} × {sy:.2f} мм)"
+        return (cols * sx / new[0], rows * sy / new[1])
+
     def _process_image(self, it: Item, st: Settings):
         spacing = self._spacing(it, st)
         it.region, it.result["region_source"] = self._region(it, st)
+        spacing = self._to_native(it, spacing)
         if it.region == "femur":
             it.side, it.result["side_source"] = self._side(it, spacing)
         feats = features.geometry(it.array, spacing, it.region, it.side)
