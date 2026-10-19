@@ -284,9 +284,7 @@ class Service:
         it.result["settings_note"] = settings_note(st)
         # где именно найдены посторонние предметы — для разметки (только если детектор сработал)
         if it.region == "spine" and it.result["criteria"].get(LABEL_FOREIGN, (0,))[0]:
-            it.result["foreign_boxes"] = spine.foreign_boxes(
-                it.array, spacing, self.model.threshold("fo", st.mode),
-                float(getattr(self.model, "fo_over_spine_threshold", float("inf"))))
+            it.result["foreign_boxes"] = spine.foreign_boxes(it.array, spacing, self.model.foreign_thresholds(st.mode))
         it.result["probs"], it.result["quality_prob"] = self.model.probabilities(it.result["criteria"], it.region)
 
     @staticmethod

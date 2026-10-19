@@ -163,7 +163,7 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
         for k, box in enumerate(it.result.get("foreign_boxes", [])):
             x0, y0, x1, y1 = [v * scale for v in box["box"]]
             d.rectangle([x0 - 4, y0 - 4, x1 + 4, y1 + 4], outline=ORANGE, width=3)
-            _label(d, (x0 - 4, y1 + 8), f"предмет {k + 1}" + (" (поверх столба)" if box["where"] == "поверх столба" else ""),
+            _label(d, (x0 - 4, y1 + 8), f"предмет {k + 1}" + (f" ({box['where']})" if box["where"] != "вне столба" else ""),
                    small, ORANGE)
     d.text((8, img.height - f.size - 8), "ИИ-контроль качества DXA · не для диагностики", font=_font(max(11, img.width // 70)),
            fill=(200, 200, 200))

@@ -101,6 +101,14 @@ class QualityModel:
         over = _nan([feats[i].get("fo_over_spine_p99", np.nan) for i in sp], 0.0)
         neg_in = over[y_fo == 0]
         self.fo_over_spine_threshold = float(neg_in.max() * 1.02) if len(neg_in) else float("inf")
+        # предметы на кости — свои пороги по зонам: максимум по нормам обучающей части × 1.02
+        # (край гребня подвздошной кости и структура позвонков не дают ложных тревог на обучении)
+        self.fo_bone_thresholds = {}
+        for zone in ("pelvis", "column"):
+            vals = np.array([feats[i].get(f"fo_{zone}_max", np.nan) for i in sp], float)[y_fo == 0]
+            vals = vals[np.isfinite(vals)]
+            # нет признака у норм (старые измерения) или он нулевой — зона не проверяется, а не «всё — предмет»
+            self.fo_bone_thresholds[zone] = float(vals.max() * 1.02) if len(vals) and vals.max() > 0 else float("inf")
 
         # --- бедро: укладка/ротация — две оценки
         fe = np.nonzero(regions == "femur")[0]
@@ -150,6 +158,12 @@ class QualityModel:
         u = np.abs(area - self.area_norm)
         return (_cdf(self.ref_u, u) + _cdf(self.ref_off, -off)) / 2
 
+    def foreign_thresholds(self, mode: str = "balanced") -> dict:
+        """Пороги детектора посторонних предметов по зонам — для решения и для рамок на картинке."""
+        bone = getattr(self, "fo_bone_thresholds", {})
+        return dict(lateral=self.threshold("fo", mode), pelvis=bone.get("pelvis", float("inf")),
+                    column=bone.get("column", float("inf")))
+
     def threshold(self, name: str, mode: str = "balanced") -> float:
         """Обучаемый порог ("fo" или "femur") для режима; у модели без режимов — порог по F1."""
         table = getattr(self, f"{name}_thresholds", None)
@@ -170,17 +184,18 @@ class QualityModel:
                                       ("гребни подвздошных костей не видны у нижнего края" if np.isfinite(fr) and fr < iliac
                                        else "гребни подвздошных костей видны") + st.note("iliac_min_frac"))
             r = float(_nan([feat.get("fo_ridge_p99", np.nan)], 0)[0])
-            r_in = float(_nan([feat.get("fo_over_spine_p99", np.nan)], 0)[0])
-            thr_in = float(getattr(self, "fo_over_spine_threshold", float("inf")))
-            thr = self.threshold("fo", st.mode)
-            hit_lat = r >= thr
-            hit_in = r_in >= thr_in
-            hit = hit_lat or hit_in
-            where = "вне столба" if hit_lat else ("поверх позвоночного столба" if hit_in else "")
-            out[LABEL_FOREIGN] = (int(hit), r,
-                                  f"тонкие яркие линии вне позвоночника: {r:.3f} (порог {thr:.3f}{mode_note}); "
-                                  f"поверх столба: {r_in:.3f} (порог {thr_in:.3f})"
-                                  + (f" — обнаружено {where}" if hit else ""))
+            thr_all = self.foreign_thresholds(st.mode)
+            thr = thr_all["lateral"]
+            zones = [("вне столба", r, thr)]
+            for key, title in (("pelvis", "поверх таза"), ("column", "поверх позвоночника")):
+                zones.append((title, float(_nan([feat.get(f"fo_{key}_max", np.nan)], 0)[0]), thr_all[key]))
+            found = [title for title, val, t in zones if val >= t]
+            # оценка для вероятности — самая сильная из зон в единицах порога «вне столба»
+            score = max([r] + [thr * val / t for _, val, t in zones[1:] if np.isfinite(t) and t > 0])
+            out[LABEL_FOREIGN] = (int(bool(found)), score,
+                                  "; ".join(f"{title}: {val:.3f} (порог {t:.3f}{mode_note if title == 'вне столба' else ''})"
+                                            for title, val, t in zones)
+                                  + (f" — обнаружено {', '.join(found)}" if found else ""))
         else:
             b = feat.get("roi_margin_bottom_cm", np.nan)
             h = feat.get("field_height_cm", np.nan)

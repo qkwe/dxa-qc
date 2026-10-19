@@ -38,9 +38,17 @@ def main():
 
     images = load_dataset(args.data)
     print(f"снимков {len(images)}", flush=True)
+    # кэш годится, только если посчитан этим же кодом измерителей (иначе в нём нет новых признаков
+    # или они посчитаны по-старому — модель молча обучится на устаревших измерениях)
+    version = features.code_version()
     cache = {}
     if Path(args.cache).exists() and not args.refresh_geo:
-        cache = pickle.load(open(args.cache, "rb"))
+        saved = pickle.load(open(args.cache, "rb"))
+        if isinstance(saved, dict) and saved.get("__version__") == version:
+            cache = saved
+        else:
+            print("кэш измерений от другой версии кода — пересчитываю", flush=True)
+    cache["__version__"] = version
     geo = []
     for n, im in enumerate(images):
         key = f"{im.study_uid}:{im.image_uid}"

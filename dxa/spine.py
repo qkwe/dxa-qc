@@ -42,30 +42,36 @@ def measure(array: np.ndarray, spacing: Spacing) -> dict:
     return _analyse(array, spacing)[0]
 
 
-def foreign_boxes(array: np.ndarray, spacing: Spacing, thr_lateral: float, thr_over: float,
-                  limit: int = 6) -> list[dict]:
+def foreign_boxes(array: np.ndarray, spacing: Spacing, thresholds: dict, limit: int = 6) -> list[dict]:
     """Где детектор посторонних предметов увидел сигнал: рамки (x0, y0, x1, y1) в пикселях снимка.
 
-    Те же карты, что в measure(): отклик тонкой яркой линии вне столба (r1) и поверх столба (r1 − r3).
+    Те же карты и пороги, что в решении: вне столба (r1), поверх таза и поверх позвоночника (r1 по окну 5).
     Пиксели выше порога решения склеиваются в объекты. Чтобы не обводить шум (отдельные пиксели
     чуть выше порога), показываются: самый сильный объект всегда (детектор сработал — нужно показать
     где), остальные — если выше порога в 1.5 раза (косточки белья с обеих сторон бывают разной
     яркости — сравнивать с самым сильным нельзя). На обучающем наборе предметы дают отклик в 2–8 раз
-    выше порога, шум — в 1.1–1.4 раза. «Поверх столба» —
-    только если сработал именно этот детектор. Только для разметки, на решение не влияет."""
+    выше порога, шум — в 1.1–1.4 раза. Зоны на кости — только если сработал детектор этой зоны.
+    Только для разметки, на решение не влияет. thresholds: {"lateral", "pelvis", "column"}."""
     maps = _analyse(array, spacing)[1]
     if not maps:
         return []
-    detectors = [("вне столба", maps["r1"], maps["area"], thr_lateral)]
-    zone = maps["inside_zone"]
-    if zone.any() and np.percentile(maps["thin_ridge"][zone], 99.5) >= thr_over:
-        detectors.append(("поверх столба", maps["thin_ridge"], zone, thr_over))
+    detectors = [("вне столба", maps["r1"], maps["area"], thresholds["lateral"])]
+    for where, zone, key in (("поверх таза", maps["pelvis_zone"], "pelvis"), ("поверх позвоночника", maps["inside_zone"], "column")):
+        thr = thresholds.get(key, float("inf"))
+        if zone.any() and maps["ext"][zone].max() >= thr:
+            detectors.append((where, maps["ext"], zone, thr))
     out = []
     for where, strength, zone, thr in detectors:
         hits = (strength >= thr) & zone
         if not hits.any():
             continue
-        lab, _ = ndimage.label(ndimage.binary_dilation(hits, iterations=3))
+        # рамка — на весь предмет, а не только на самую яркую часть: объект «дорастает» от ядра (выше
+        # порога) по соседним пикселям выше половины порога (гистерезис, как в детекторе границ Канни)
+        grown = ndimage.binary_dilation((strength >= 0.5 * thr) & zone, iterations=1)
+        lab_g, _ = ndimage.label(grown)
+        keep = np.isin(lab_g, np.unique(lab_g[hits]))
+        keep &= lab_g > 0
+        lab, _ = ndimage.label(ndimage.binary_dilation(keep, iterations=2))
         found = []
         for k, sl in enumerate(ndimage.find_objects(lab), start=1):
             comp = (lab[sl] == k) & hits[sl]
@@ -165,7 +171,18 @@ def _analyse(array: np.ndarray, spacing: Spacing) -> tuple[dict, dict]:
     inside_zone = (~lateral) & valid[:, None] & inside
     fo_over_spine_score = float(np.percentile(thin_ridge[inside_zone], 99.5)) if inside_zone.any() else 0.0
 
-    maps = dict(r1=r1, area=area, thin_ridge=thin_ridge, inside_zone=inside_zone)
+    # Предметы НА КОСТИ (замечание экспертов: исключать их нельзя) — отдельно по зонам, каждая со своим
+    # порогом: поверх таза (нижняя четверть кадра сбоку) и поверх позвоночника. Признак — отклик тонкой
+    # яркой линии, усреднённый по окну 5 пикселей (протяжённый предмет сильнее отдельных ярких точек кости),
+    # максимум по зоне. Проверено 20.10 на стенде из настоящих предметов, вклеенных в нормальные снимки
+    # (с перенормировкой, как у аппарата): поверх таза находится ~92% (было 8%), поверх позвоночника 7–29%
+    # (было 5%), ложных тревог на нормах не больше прежнего.
+    ext = ndimage.uniform_filter(r1, 5)
+    pelvis_zone = low & valid[:, None] & inside
+    fo_pelvis = float(ext[pelvis_zone].max()) if pelvis_zone.any() else 0.0
+    fo_column = float(ext[inside_zone].max()) if inside_zone.any() else 0.0
+
+    maps = dict(r1=r1, area=area, thin_ridge=thin_ridge, inside_zone=inside_zone, ext=ext, pelvis_zone=pelvis_zone)
     return dict(
         sp_iliac_frac=iliac_frac,
         sp_iliac_height_mm=iliac_height_mm,
@@ -177,4 +194,6 @@ def _analyse(array: np.ndarray, spacing: Spacing) -> tuple[dict, dict]:
         fo_spots=float(spots),
         fo_ridge_p99=fo_score,
         fo_over_spine_p99=fo_over_spine_score,
+        fo_pelvis_max=fo_pelvis,
+        fo_column_max=fo_column,
     ), maps

@@ -45,7 +45,7 @@ def verdict(arr):
 
 flag0, lat0, over0, _ = verdict(base)
 print(f"оригинал (норма):          вердикт={flag0}  вне столба={lat0:.4f}  поверх столба={over0:.4f}")
-print(f"  порог вне столба={model.fo_threshold:.4f}, порог поверх столба={model.fo_over_spine_threshold:.4f}")
+print(f"  пороги: {model.foreign_thresholds()}")
 
 ok = flag0 == 0
 for dy, tag in ((0.5, "центр (над позвонком)"), (0.25, "верхняя треть"), (0.75, "нижняя треть")):
