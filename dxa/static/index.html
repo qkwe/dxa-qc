@@ -375,6 +375,13 @@ async function poll() {
     $(id).href = `api/jobs/${job}/${f}`; $(id).style.display = rows.length ? "" : "none";
   }
   render();
+  // ссылка вида ?job=<id>&row=<N>[&fo=1][&peak=1] сразу открывает нужный снимок (удобно для демонстрации)
+  const qs = new URLSearchParams(location.search);
+  if (qs.get("row") != null) {
+    $("fo").checked = qs.get("fo") === "1"; $("peak").checked = qs.get("peak") === "1";
+    const tr = document.querySelector(`tbody tr[data-k="${Number(qs.get("row"))}"]`);
+    if (tr) { select(tr, rows[Number(qs.get("row"))]); tr.scrollIntoView({block: "center"}); }
+  }
 }
 
 // открыть готовое задание по ссылке ?job=<id>
@@ -397,6 +404,7 @@ function render() {
       `<td>${esc(r.anatomical_region)}${r.side ? " (" + esc(r.side) + ")" : ""}</td><td>${verdict}</td><td>${prob(r)}</td><td>${tags}</td>` +
       `<td>${esc(r.processing_status)}</td><td>${esc(r.time_of_processing)}</td>`;
     tr.onclick = () => select(tr, r);
+    tr.dataset.k = k;
     tb.appendChild(tr);
   });
 }

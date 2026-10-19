@@ -33,6 +33,15 @@ COLUMNS = ["path_to_study", "study_uid", "image_uid", "anatomical_region", "qual
            "violation_type", "processing_status", "time_of_processing", "quality_prob"]
 
 
+def _same(a, b):
+    """Равенство параметров модели с допуском на округление (Windows и Linux расходятся в 16-м знаке)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
+    return a == b
+
+
 def run(args, log):
     t0 = time.time()
     r = subprocess.run([PY, "-W", "ignore", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
@@ -67,7 +76,7 @@ def main():
     if r.returncode == 0:
         fresh = json.loads((tmp / "m.json").read_text(encoding="utf-8"))
         keys = [k for k in shipped if k not in ("trained",)]
-        diff = [k for k in keys if shipped.get(k) != fresh.get(k)]
+        diff = [k for k in keys if not _same(shipped.get(k), fresh.get(k))]
         check("Модель воспроизводится обучением с нуля", not diff,
               "все параметры совпали с поставленной моделью" if not diff else f"отличаются: {diff}")
     else:

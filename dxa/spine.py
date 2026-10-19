@@ -72,10 +72,13 @@ def foreign_boxes(array: np.ndarray, spacing: Spacing, thresholds: dict, limit: 
         keep = np.isin(lab_g, np.unique(lab_g[hits]))
         keep &= lab_g > 0
         lab, _ = ndimage.label(ndimage.binary_dilation(keep, iterations=2))
+        peak = np.unravel_index(np.argmax(np.where(hits, strength, -np.inf)), strength.shape)
         found = []
         for k, sl in enumerate(ndimage.find_objects(lab), start=1):
             comp = (lab[sl] == k) & hits[sl]
-            if comp.sum() >= 3:  # одиночные пиксели — шум
+            # одиночные пиксели — шум, но объект с максимумом отклика показывается всегда: детектор сработал
+            # именно по нему (при отклике чуть выше порога пикселей выше порога может быть 1–2)
+            if comp.sum() >= 3 or lab[peak] == k:
                 y, x = sl
                 found.append(dict(box=(x.start, y.start, x.stop, y.stop), where=where,
                                   strength=float(strength[sl][comp].max()), ratio=float(strength[sl][comp].max() / thr)))
