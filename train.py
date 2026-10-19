@@ -16,7 +16,10 @@ from pathlib import Path
 import joblib
 
 sys.path.insert(0, str(Path(__file__).parent))
-from dxa import features
+import numpy as np
+from sklearn.model_selection import StratifiedGroupKFold
+
+from dxa import features, region
 from dxa.data import load_dataset
 from dxa.model import QualityModel
 
@@ -51,12 +54,25 @@ def main():
 
     lab = [i for i, im in enumerate(images) if im.quality is not None]
     model = QualityModel().fit([geo[i] for i in lab], [images[i].region for i in lab], [images[i].labels for i in lab])
+    # область по анатомии — запасной способ для снимков не «родного» размера (dxa/region.py)
+    arrays = [im.array for im in images]
+    is_spine = np.array([im.region == "spine" for im in images], int)
+    groups = np.array([im.study_uid for im in images])
+    X = np.array([region.features(a) for a in arrays])
+    oof = np.zeros(len(images))
+    for tr, te in StratifiedGroupKFold(5, shuffle=True, random_state=0).split(X, is_spine, groups):
+        oof[te] = region.fit([arrays[i] for i in tr], is_spine[tr]).predict_proba(X[te])[:, 1]
+    region_model = region.fit(arrays, is_spine)
+    region_cv = f"{int(((oof >= 0.5) == is_spine).sum())} из {len(images)}"
+    print("область по анатомии, кросс-валидация по исследованиям:", region_cv, flush=True)
+
     meta = dict(trained=dt.datetime.now().isoformat(timespec="seconds"), n_images=len(images), n_labeled=len(lab),
                 fo_threshold=model.fo_threshold, fo_over_spine_threshold=model.fo_over_spine_threshold,
                 femur_threshold=model.femur_threshold, area_norm=model.area_norm,
-                fo_thresholds=model.fo_thresholds, femur_thresholds=model.femur_thresholds)
+                fo_thresholds=model.fo_thresholds, femur_thresholds=model.femur_thresholds,
+                region_anatomy_cv=region_cv)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(dict(quality=model, meta=meta), args.out)
+    joblib.dump(dict(quality=model, region=region_model, meta=meta), args.out)
     json.dump(meta, open(Path(args.out).with_suffix(".json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("сохранено", args.out, meta)
 

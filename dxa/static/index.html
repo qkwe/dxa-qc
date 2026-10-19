@@ -57,7 +57,8 @@
   tbody tr { cursor: pointer; }
   .right { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
   #viewer { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; overflow: hidden; min-height: 120px; }
-  #viewer img { max-width: 100%; max-height: 100%; image-rendering: pixelated; }
+  #viewer img { max-width: 100%; max-height: 100%; cursor: zoom-in; }  /* уменьшение — плавное: «pixelated» при уменьшении рассыпает подписи */
+  #viewer a { display: contents; }
   #viewer .ph { color: #6f6; font: 12px "Courier New", monospace; text-align: center; padding: 10px; }
   #details { height: 170px; overflow: auto; padding: 4px; font: 11px "Courier New", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
   .statusbar { display: flex; gap: 2px; padding: 2px; }
@@ -102,6 +103,7 @@
     <button id="run" disabled>▶ Обработать</button>
     <div class="sep"></div>
     <button id="opts" title="Режим чувствительности, пороги, проверяемые критерии">⚙ Настройки...</button>
+    <button id="view" disabled title="Открыть выбранный снимок с разметкой в полном размере (также — двойной щелчок по строке)">🔍 Просмотр</button>
     <div class="sep"></div>
     <a class="btn" id="dlx" href="#" style="display:none">Отчёт XLSX</a>
     <a class="btn" id="dlc" href="#" style="display:none">Отчёт CSV</a>
@@ -305,6 +307,7 @@ async function poll() {
     return;
   }
   rows = j.rows || [];
+  current = null; $("view").disabled = true;
   $("bar").style.width = "100%";
   $("prog").className = "progress sunken done"; $("bartext").textContent = "✓ Готово";
   const bad = rows.filter((r) => r.quality_class === 1).length;
@@ -334,24 +337,33 @@ function render() {
     const tags = (r.violation_type || "").split("; ").filter(Boolean).map((v) => `<span class="tag">${esc(v)}</span>`).join("");
     const verdict = r.processing_status !== "Success" ? "—" : (r.quality_class === 1 ? '<span class="no">БРАК</span>' : '<span class="ok">НОРМА</span>');
     tr.innerHTML = `<td>${k + 1}</td><td title="${esc(r.study_uid)}">…${esc(String(r.study_uid).slice(-10))}</td>` +
-      `<td>${esc(r.anatomical_region)}${r.side ? " (" + esc(r.side) + ")" : ""}</td><td>${verdict}</td><td>${prob(r)}</td><td>${tags || (r.duplicate_of ? "(копия)" : "")}</td>` +
+      `<td>${esc(r.anatomical_region)}${r.side ? " (" + esc(r.side) + ")" : ""}</td><td>${verdict}</td><td>${prob(r)}</td><td>${tags}</td>` +
       `<td>${esc(r.processing_status)}</td><td>${esc(r.time_of_processing)}</td>`;
     tr.onclick = () => select(tr, r);
     tb.appendChild(tr);
   });
 }
 
+// просмотр в полном размере: кнопка «Просмотр», щелчок по снимку или двойной щелчок по строке
+let current = null;
+const overlayUrl = (r) => r && r.overlay ? `api/jobs/${job}/overlay/${encodeURI(r.overlay)}` : "";
+$("view").onclick = () => { if (overlayUrl(current)) window.open(overlayUrl(current), "_blank"); };
+
 function select(tr, r) {
   document.querySelectorAll("tbody tr.sel").forEach((x) => x.classList.remove("sel"));
   tr.classList.add("sel");
+  current = r;
+  $("view").disabled = !r.overlay;
+  tr.ondblclick = () => $("view").click();
   const v = $("viewer");
-  v.innerHTML = r.overlay ? `<img alt="" src="api/jobs/${job}/overlay/${encodeURI(r.overlay)}">`
-                          : `<div class="ph">${r.duplicate_of ? "КОПИЯ ИЗОБРАЖЕНИЯ<br>" + esc(r.duplicate_of) : "НЕТ ИЗОБРАЖЕНИЯ"}</div>`;
+  v.innerHTML = r.overlay ? `<a href="${overlayUrl(r)}" target="_blank" title="Открыть в полном размере"><img alt="" src="${overlayUrl(r)}"></a>`
+                          : `<div class="ph">НЕТ ИЗОБРАЖЕНИЯ${r.processing_status !== "Success" ? "<br>файл не обработан" : ""}</div>`;
   const det = (r.details || "").split(" | ").join("\n");
   $("details").textContent =
     `ИССЛЕДОВАНИЕ: ${r.study_uid}\nИЗОБРАЖЕНИЕ:  ${r.image_uid}\nОБЛАСТЬ:      ${r.anatomical_region}${r.side ? " (" + r.side + ")" : ""}\n` +
     `ИТОГ:         ${r.quality_class === 1 ? "ЕСТЬ НАРУШЕНИЕ" : (r.quality_class === 0 ? "КАЧЕСТВЕННОЕ" : "—")}\n` +
     `ВЕРОЯТНОСТЬ НАРУШЕНИЯ: ${prob(r) || "—"}\n` +
+    (r.duplicate_of ? `(тот же снимок, что ${r.duplicate_of} — результат общий)\n` : "") +
     `----------------------------------------\n${det}` + (r.settings ? `\n\nНАСТРОЙКИ: ${r.settings}` : "") + (r.error ?`\n\nОШИБКА: ${r.error}` : "");
 }
 </script>

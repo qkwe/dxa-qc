@@ -123,3 +123,43 @@ def test_upload_paths_safe_and_unique(tmp_path):
     assert a != b and a.read_bytes() == b"1"
     for p in (a, b, c, d):
         assert tmp_path in p.parents
+
+
+def test_own_derived_series_rejected(tmp_path):
+    """Наша доп. серия (DICOM SC с разметкой), загруженная обратно, — понятная ошибка, а не «позвоночник»."""
+    import numpy as np
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+    from dxa.pipeline import read_items
+
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.7"
+    ds.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds.SOPClassUID, ds.SOPInstanceUID = "1.2.840.10008.5.1.4.1.1.7", ds.file_meta.MediaStorageSOPInstanceUID
+    ds.Manufacturer = "DXA-QC (хакатон)"
+    ds.Rows, ds.Columns, ds.SamplesPerPixel, ds.PhotometricInterpretation = 30, 30, 1, "MONOCHROME2"
+    ds.BitsAllocated, ds.BitsStored, ds.HighBit, ds.PixelRepresentation = 8, 8, 7, 0
+    ds.PixelData = np.zeros((30, 30), np.uint8).tobytes()
+    ds.save_as(tmp_path / "x_SC.dcm", enforce_file_format=True)
+    items = read_items(tmp_path)
+    assert len(items) == 1 and "доп. серия DXA-QC" in items[0].error
+
+
+@pytest.mark.skipif(not MODEL.exists(), reason="нет обученной модели")
+def test_region_by_anatomy_for_rescaled_images():
+    """Снимок нестандартного размера без подсказок: область по анатомии, а не по ширине."""
+    import joblib
+    from PIL import Image
+
+    from dxa import region
+
+    m = joblib.load(MODEL)["region"]
+    y, x = np.mgrid[0:300, 0:300]
+    spine = np.exp(-((x - 150) / 35.0) ** 2) * 200 + 20          # яркий столб по центру
+    femur = np.exp(-((x - 210) ** 2 + (y - 80) ** 2) / 2500.0) * 220 + np.exp(-((x - 120) / 30.0) ** 2) * (y > 120) * 180
+    for arr, want in ((spine, 1), (femur, 0)):
+        big = np.asarray(Image.fromarray(arr.astype(np.uint8)).resize((900, 900)))
+        assert (region.spine_probability(m, big) >= 0.5) == bool(want)

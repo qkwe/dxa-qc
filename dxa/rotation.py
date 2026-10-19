@@ -105,11 +105,16 @@ def measure(array: np.ndarray, spacing: Spacing, side: str | None, mask: np.ndar
     gt_top = float(gt_rows.min()) if len(gt_rows) else np.nan
 
     offset = (hx - axis_x(hy)) * sx
+    # вершина малого вертела в координатах исходного снимка — для разметки на картинке
+    peak = int(np.argmax(bump))
+    peak_x = float(edge[peak]) if lm["medial"] == "right" else float(mask.shape[1] - 1 - edge[peak])
     # угол шейки: от центра головки к точке оси диафиза на уровне малого вертела
     neck_dx = (hx - axis_x(hy + radius * 2)) * sx
     neck_dy = radius * 2 * sy
     return dict(
         rot_lt_bump_mm=float(bump.max()),
+        rot_lt_peak_x=peak_x,
+        rot_lt_peak_y=float(band[peak]),
         rot_lt_area_mm2=float(np.clip(bump, 0, None).sum() * sy * sx),
         rot_lt_chord_mm=float(over_chord.max()),
         rot_offset_mm=float(offset),

@@ -23,7 +23,7 @@ import joblib
 import numpy as np
 import pydicom
 
-from . import features
+from . import features, region
 from .data import pixel_spacing
 from .settings import Settings
 
@@ -95,6 +95,11 @@ def read_items(src) -> list[Item]:
         it = Item(path=name)
         try:
             ds = pydicom.dcmread(io.BytesIO(data), force=True)
+            if str(ds.get("Manufacturer", "") or "").startswith("DXA-QC"):
+                # наша же доп. серия (разметка DICOM SC) из series.zip: не исходный снимок, а копия
+                # с нарисованными линиями ×3 — анализировать её нельзя
+                raise ValueError("это доп. серия DXA-QC (разметка или заключение), а не исходный снимок — "
+                                 "загрузите исходные DICOM")
             if "PixelData" not in ds:
                 if ds.get("SOPClassUID") or ds.get("DirectoryRecordSequence"):
                     continue  # настоящий DICOM без изображения (SR, DICOMDIR) — не наш вход
@@ -147,7 +152,9 @@ class Service:
     """Загружает модели один раз; process() — обработка каталога/zip."""
 
     def __init__(self, model_path="models/quality_model.joblib", settings: Settings | None = None):
-        self.model = joblib.load(model_path)["quality"]
+        bundle = joblib.load(model_path)
+        self.model = bundle["quality"]
+        self.region_model = bundle.get("region")  # область по анатомии (может отсутствовать в старых моделях)
         self.settings = settings or Settings()
 
     @staticmethod
@@ -156,13 +163,25 @@ class Service:
         return tuple(st.pixel_spacing_mm) if st.pixel_spacing_mm else pixel_spacing(it.ds, it.array)
 
     # --- область и сторона
-    @staticmethod
-    def _region(it: Item, st: Settings | None = None) -> str:
+    def _region(self, it: Item, st: Settings | None = None) -> tuple[str, str]:
+        """(область, откуда известна). Порядок: теги/имя файла → правило ширины для снимков
+        «родного» размера аппарата → анатомия (dxa/region.py) для всех остальных."""
         spine_hint, femur_hint = _hint(it, _SPINE_HINT), _hint(it, _FEMUR_HINT)
         if spine_hint != femur_hint:
-            return "spine" if spine_hint else "femur"
-        width = (st or Settings()).spine_min_width_px
-        return "spine" if it.array.shape[1] >= width else "femur"
+            return ("spine" if spine_hint else "femur"), "теги/имя файла"
+        width = it.array.shape[1]
+        by_width = "spine" if width >= (st or Settings()).spine_min_width_px else "femur"
+        if self.region_model is None:
+            return by_width, "ширина снимка"
+        p = region.spine_probability(self.region_model, it.array)
+        by_anatomy = "spine" if p >= 0.5 else "femur"
+        lo, hi = region.NATIVE_WIDTH_PX
+        if lo <= width <= hi:
+            confident = p >= region.CONFIDENT or p <= 1 - region.CONFIDENT
+            if by_anatomy != by_width and confident:
+                return by_anatomy, f"анатомия (уверенность {max(p, 1 - p):.2f}; ширина указывала на другое)"
+            return by_width, "ширина снимка"
+        return by_anatomy, f"анатомия (уверенность {max(p, 1 - p):.2f}; нестандартный размер {width} пикс.)"
 
     @staticmethod
     def _anatomical_side(it: Item, spacing) -> str:
@@ -210,6 +229,7 @@ class Service:
                 if src_it is not it and src_it is not None:
                     it.result, it.region, it.side, it.error = src_it.result, src_it.region, src_it.side, src_it.error
             elapsed = (time.time() - t0) / max(len(group), 1)
+            first = len(rows)
             for it in group:
                 rows.append(self._row(it, elapsed))
                 if series_dir and not it.error and not it.duplicate_of:
@@ -219,13 +239,18 @@ class Service:
                         rows[-1]["overlay"] = Path(png).relative_to(Path(series_dir)).as_posix()
                     except Exception as e:
                         rows[-1]["error"] = (rows[-1].get("error") or "") + f" доп. серия: {e}"
+            # копия показывает ту же картинку, что и исходный снимок (доп. серия пишется один раз)
+            overlays = {r["image_uid"]: r["overlay"] for r in rows[first:] if r.get("overlay")}
+            for r in rows[first:]:
+                if r["duplicate_of"] and r["duplicate_of"] in overlays:
+                    r["overlay"] = overlays[r["duplicate_of"]]
             if progress:
                 progress(n + 1, len(by_study))
         return rows
 
     def _process_image(self, it: Item, st: Settings):
         spacing = self._spacing(it, st)
-        it.region = self._region(it, st)
+        it.region, it.result["region_source"] = self._region(it, st)
         if it.region == "femur":
             it.side, it.result["side_source"] = self._side(it, spacing)
         feats = features.geometry(it.array, spacing, it.region, it.side)

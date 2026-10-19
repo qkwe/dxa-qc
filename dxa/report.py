@@ -33,6 +33,13 @@ def _font(size):
     return ImageFont.load_default()
 
 
+def _label(d: ImageDraw.ImageDraw, xy, text: str, font, color):
+    """Подпись на тёмной подложке — читается и на светлой кости."""
+    x, y = xy
+    d.rectangle([x - 2, y - 1, x + d.textlength(text, font=font) + 2, y + font.size + 3], fill=(0, 0, 0))
+    d.text((x, y), text, font=font, fill=color)
+
+
 def overlay(it) -> P.Image:
     a = axis.normalize(it.array)
     scale = 3
@@ -54,8 +61,9 @@ def overlay(it) -> P.Image:
             d.line([bot, (bot[0], top[1])], fill=CYAN, width=2)
             ang = feats.get("axis_chord15_deg")
             if ang is not None and np.isfinite(ang):
-                d.text((top[0] + 8, top[1] + 4), f"наклон {ang:.1f}°", font=small,
-                       fill=GREEN if ok else RED)
+                # подпись у середины линии: вверху кадра её закрывает легенда
+                mid = ((top[0] + bot[0]) / 2, (top[1] + bot[1]) / 2)
+                _label(d, (max(top[0], bot[0]) + 10, mid[1]), f"наклон {ang:.1f}°", small, GREEN if ok else RED)
         h = a.shape[0] * scale
         ok = not crit.get("Некорректная укладка", (0,))[0]
         d.rectangle([2, h * 0.75, a.shape[1] * scale - 3, h - 3], outline=GREEN if ok else RED, width=3)
@@ -70,7 +78,7 @@ def overlay(it) -> P.Image:
             if sc is not None:
                 d.line([(sc * scale, 0), (sc * scale, a.shape[0] * scale)], fill=CYAN, width=2)
                 d.line([(hx * scale, hy * scale), (sc * scale, hy * scale)], fill=CYAN, width=2)
-                d.text((min(hx, sc) * scale + 4, max(hy * scale - 14, 0)), "офсет головки", font=small, fill=CYAN)
+                _label(d, (min(hx, sc) * scale + 4, max(hy * scale - small.size - 6, 0)), "офсет головки", small, CYAN)
             d.ellipse([(hx - r) * scale, (hy - r) * scale, (hx + r) * scale, (hy + r) * scale],
                       outline=color, width=3)
             # зона седалищной кости (ТЗ: должна быть представлена) — медиальнее и ниже головки
@@ -80,14 +88,17 @@ def overlay(it) -> P.Image:
             else:
                 zx0, zx1 = int(min(hx + 0.3 * r, a.shape[1] - 1)) * scale, a.shape[1] * scale
             d.rectangle([zx0, yz0, zx1, yz1], outline=(170, 170, 255), width=2)
-            d.text((zx0 + 4, yz0 + 2), "седалищная кость", font=small, fill=(170, 170, 255))
-            # малый вертел
-            lp = lm.get("lt_peak")
-            if lp:
-                lx, ly = lp
+            _label(d, (zx0 + 4, yz0 + 3), "седалищная кость", small, (170, 170, 255))
+            # малый вертел — та же точка, по которой считается ротация (dxa/rotation.py): контур
+            # бедра обрывается там, где он «перескакивает» на седалищную кость, поэтому точка не уходит на таз
+            lx, ly = feats.get("rot_lt_peak_x"), feats.get("rot_lt_peak_y")
+            if lx is not None and ly is not None and np.isfinite(lx) and np.isfinite(ly):
                 d.ellipse([(lx - 4) * scale, (ly - 4) * scale, (lx + 4) * scale, (ly + 4) * scale],
                           outline=YELLOW, width=2)
-                d.text((lx * scale + 6, ly * scale), "малый вертел", font=small, fill=YELLOW)
+                bump = feats.get("rot_lt_bump_mm", np.nan)
+                text = "малый вертел" if not np.isfinite(bump) or bump >= 1.0 else "малый вертел не выступает"
+                tx = lx * scale + 8 if lm["medial"] == "left" else lx * scale - 8 - d.textlength(text, font=small)
+                _label(d, (max(tx, 2), ly * scale - small.size // 2), text, small, YELLOW)
             if lm.get("reliable", True):
                 x0, y0, x1, y1 = [v * scale for v in lm["box"]]
                 ok = not crit.get("Некорректная область интереса", (0,))[0]
@@ -170,7 +181,8 @@ def text_sr(it) -> Dataset:
     ds.ConceptNameCodeSequence = Sequence([code("QC", "Контроль качества денситометрии")])
     ds.CompletionFlag, ds.VerificationFlag = "COMPLETE", "UNVERIFIED"
     items = [text_item("Изображение", f"SOPInstanceUID {it.image_uid}"),
-             text_item("Область", f"{_REGION.get(it.region, it.region)}{' (' + _SIDE.get(it.side, it.side) + ')' if it.side else ''}"),
+             text_item("Область", f"{_REGION.get(it.region, it.region)}{' (' + _SIDE.get(it.side, it.side) + ')' if it.side else ''}"
+                                  f"; определена: {it.result.get('region_source', '')}"),
              text_item("Итог", ("Есть нарушение: " + "; ".join(bad)) if bad else "Исследование качественное")]
     items += [text_item(name, ("НАРУШЕНИЕ. " if flag else "норма. ") + text) for name, (flag, _, text) in crit.items()]
     if it.result.get("settings_note"):
