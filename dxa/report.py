@@ -35,13 +35,18 @@ def _font(size):
 
 
 def _label(d: ImageDraw.ImageDraw, xy, text: str, font, color):
-    """Подпись на тёмной подложке — читается и на светлой кости."""
+    """Подпись на тёмной подложке — читается и на светлой кости; не выходит за край кадра."""
     x, y = xy
+    width, height = d.im.size
+    x = min(max(x, 2), width - d.textlength(text, font=font) - 4)
+    y = min(max(y, 2), height - font.size - 6)
     d.rectangle([x - 2, y - 1, x + d.textlength(text, font=font) + 2, y + font.size + 3], fill=(0, 0, 0))
     d.text((x, y), text, font=font, fill=color)
 
 
-def overlay(it) -> P.Image:
+def overlay(it, show_peak: bool = False) -> P.Image:
+    """Снимок с разметкой. show_peak — отметить наибольший выступ медиального контура бедра
+    (в интерфейсе включается галочкой; по умолчанию только сам контур — меньше надписей)."""
     a = axis.normalize(it.array)
     scale = 3
     img = P.fromarray((a * 255).astype(np.uint8)).convert("RGB").resize((a.shape[1] * scale, a.shape[0] * scale))
@@ -51,6 +56,7 @@ def overlay(it) -> P.Image:
     feats = it.result.get("features", {})
     small = _font(max(11, img.width // 70))
     bad = any(flag for flag, _, _ in crit.values())
+    notes = []  # пояснения под легендой (жёлтым): почему чего-то нет на картинке
     if it.region == "spine":
         ys, xs = axis.centerline(it.array, spacing)
         if len(ys):
@@ -99,7 +105,9 @@ def overlay(it) -> P.Image:
                 d.line([(x * scale, y * scale) for x, y in contour], fill=YELLOW, width=2)
             lx, ly = feats.get("rot_lt_peak_x"), feats.get("rot_lt_peak_y")
             visible = np.isfinite(bump) and bump >= LT_VISIBLE_MM
-            if visible and lx is not None and ly is not None and np.isfinite(lx) and np.isfinite(ly):
+            if not show_peak:
+                ax = None
+            elif visible and lx is not None and ly is not None and np.isfinite(lx) and np.isfinite(ly):
                 d.ellipse([(lx - 5) * scale, (ly - 5) * scale, (lx + 5) * scale, (ly + 5) * scale],
                           outline=YELLOW, width=3)
                 ax, ay, text = lx, ly, f"наибольший выступ контура {bump:.1f} мм"
@@ -111,7 +119,6 @@ def overlay(it) -> P.Image:
             if ax is not None:
                 w = d.textlength(text, font=small)
                 tx = ax * scale + 14 if lm["medial"] == "right" else ax * scale - 14 - w
-                tx = min(max(tx, 2), img.width - w - 4)
                 _label(d, (tx, ay * scale - small.size // 2), text, small, YELLOW)
             if lm.get("reliable", True):
                 x0, y0, x1, y1 = [v * scale for v in lm["box"]]
@@ -122,12 +129,11 @@ def overlay(it) -> P.Image:
             else:
                 # Замечание экспертов 16.10: на коротком скане рамку области интереса не рисуем —
                 # она ошибочно сегментирует посторонние структуры. Показываем только причину.
-                d.text((8, img.height - 2 * small.size - 8),
-                       f"область интереса: ориентиры ненадёжны ({lm.get('reliable_reason', '')})",
-                       font=small, fill=(255, 215, 0))
+                notes.append(f"рамка области интереса не построена: {lm.get('reliable_reason', '')}")
     # подпись
     lines = [("ЕСТЬ НАРУШЕНИЕ" if bad else "КАЧЕСТВЕННОЕ", RED if bad else GREEN)]
     lines += [(f"{'[НАРУШЕНИЕ]' if flag else '[норма]'} {name}", RED if flag else GREEN) for name, (flag, _, _) in crit.items()]
+    lines += [(n, YELLOW) for n in notes]
     f = _font(max(14, img.width // 45))
     y = 6
     for text, color in lines:
@@ -214,15 +220,20 @@ _REGION = {"spine": "Поясничный отдел позвоночника", 
 _SIDE = {"l": "левое", "r": "правое"}
 
 
-def write_series(it, out_dir: Path):
+def write_series(it, out_dir: Path) -> tuple[Path, Path | None]:
+    """PNG + DICOM SC + DICOM SR; для бедра — ещё вариант PNG с отмеченным наибольшим выступом контура."""
     out_dir = Path(out_dir) / _safe(it.study_uid)
     out_dir.mkdir(parents=True, exist_ok=True)
     img = overlay(it)
     stem = _safe(it.image_uid)[-40:]
     img.save(out_dir / f"{stem}.png")
+    peak = None
+    if it.region == "femur":
+        peak = out_dir / f"{stem}_peak.png"
+        overlay(it, show_peak=True).save(peak)
     secondary_capture(it, img).save_as(out_dir / f"{stem}_SC.dcm", enforce_file_format=True)
     text_sr(it).save_as(out_dir / f"{stem}_SR.dcm", enforce_file_format=True)
-    return out_dir / f"{stem}.png"
+    return out_dir / f"{stem}.png", peak
 
 
 def _safe(s: str) -> str:

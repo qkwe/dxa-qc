@@ -149,7 +149,8 @@
     </fieldset>
     <div class="right">
       <fieldset style="flex:1;display:flex;flex-direction:column">
-        <legend>Просмотр изображения</legend>
+        <legend>Просмотр изображения
+          <label id="peakbox" style="visibility:hidden" title="Отметить на снимке бедра наибольший выступ медиального контура (оценка ротации)"><input type="checkbox" id="peak"> наибольший выступ контура</label></legend>
         <div id="viewer" class="sunken"><div class="ph">НЕТ ИЗОБРАЖЕНИЯ<br>выберите строку журнала</div></div>
       </fieldset>
       <fieldset>
@@ -346,8 +347,21 @@ function render() {
 
 // просмотр в полном размере: кнопка «Просмотр», щелчок по снимку или двойной щелчок по строке
 let current = null;
-const overlayUrl = (r) => r && r.overlay ? `api/jobs/${job}/overlay/${encodeURI(r.overlay)}` : "";
+// у бедра два варианта картинки: только контур (по умолчанию) и с отмеченным наибольшим выступом
+const overlayUrl = (r) => {
+  if (!r || !r.overlay) return "";
+  const path = $("peak").checked && r.overlay_peak ? r.overlay_peak : r.overlay;
+  return `api/jobs/${job}/overlay/${encodeURI(path)}`;
+};
 $("view").onclick = () => { if (overlayUrl(current)) window.open(overlayUrl(current), "_blank"); };
+$("peak").onchange = () => showImage(current);
+
+function showImage(r) {
+  if (!r) return;
+  $("peakbox").style.visibility = r.overlay_peak ? "visible" : "hidden";
+  $("viewer").innerHTML = r.overlay ? `<a href="${overlayUrl(r)}" target="_blank" title="Открыть в полном размере"><img alt="" src="${overlayUrl(r)}"></a>`
+                                   : `<div class="ph">НЕТ ИЗОБРАЖЕНИЯ${r.processing_status !== "Success" ? "<br>файл не обработан" : ""}</div>`;
+}
 
 function select(tr, r) {
   document.querySelectorAll("tbody tr.sel").forEach((x) => x.classList.remove("sel"));
@@ -355,9 +369,7 @@ function select(tr, r) {
   current = r;
   $("view").disabled = !r.overlay;
   tr.ondblclick = () => $("view").click();
-  const v = $("viewer");
-  v.innerHTML = r.overlay ? `<a href="${overlayUrl(r)}" target="_blank" title="Открыть в полном размере"><img alt="" src="${overlayUrl(r)}"></a>`
-                          : `<div class="ph">НЕТ ИЗОБРАЖЕНИЯ${r.processing_status !== "Success" ? "<br>файл не обработан" : ""}</div>`;
+  showImage(r);
   const det = (r.details || "").split(" | ").join("\n");
   $("details").textContent =
     `ИССЛЕДОВАНИЕ: ${r.study_uid}\nИЗОБРАЖЕНИЕ:  ${r.image_uid}\nОБЛАСТЬ:      ${r.anatomical_region}${r.side ? " (" + r.side + ")" : ""}\n` +

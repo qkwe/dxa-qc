@@ -235,15 +235,19 @@ class Service:
                 if series_dir and not it.error and not it.duplicate_of:
                     try:
                         from . import report
-                        png = report.write_series(it, Path(series_dir))
+                        png, peak = report.write_series(it, Path(series_dir))
                         rows[-1]["overlay"] = Path(png).relative_to(Path(series_dir)).as_posix()
+                        if peak:
+                            rows[-1]["overlay_peak"] = Path(peak).relative_to(Path(series_dir)).as_posix()
                     except Exception as e:
                         rows[-1]["error"] = (rows[-1].get("error") or "") + f" доп. серия: {e}"
             # копия показывает ту же картинку, что и исходный снимок (доп. серия пишется один раз)
-            overlays = {r["image_uid"]: r["overlay"] for r in rows[first:] if r.get("overlay")}
+            source = {r["image_uid"]: r for r in rows[first:] if r.get("overlay")}
             for r in rows[first:]:
-                if r["duplicate_of"] and r["duplicate_of"] in overlays:
-                    r["overlay"] = overlays[r["duplicate_of"]]
+                if r["duplicate_of"] and r["duplicate_of"] in source:
+                    for key in ("overlay", "overlay_peak"):
+                        if key in source[r["duplicate_of"]]:
+                            r[key] = source[r["duplicate_of"]][key]
             if progress:
                 progress(n + 1, len(by_study))
         return rows
