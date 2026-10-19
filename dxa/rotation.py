@@ -89,6 +89,10 @@ def measure(array: np.ndarray, spacing: Spacing, side: str | None, mask: np.ndar
     trend = ndimage.gaussian_filter1d(edge, sigma=10 / sy, mode="nearest")
     bump = (edge - trend) * sx
     margin = max(int(3 / sy), 2)
+    # Верхнюю часть участка (переход шейки к седалищной кости) НЕ исключаем, хотя наибольший выступ
+    # иногда приходится туда, а не на сам малый вертел: проверено 19.10 на вложенной CV — исключение
+    # верхних 15/25/35/50% участка ухудшает оценку ротации (AUC 0.863 → 0.851/0.840/0.815/0.736).
+    # Полезный сигнал даёт форма всего медиального контура от шейки до диафиза, а не только вертел.
     bump[:margin] = 0
     bump[-margin:] = 0
     # и относительно хорды между началом и концом участка (как в прошлой версии)
@@ -105,9 +109,11 @@ def measure(array: np.ndarray, spacing: Spacing, side: str | None, mask: np.ndar
     gt_top = float(gt_rows.min()) if len(gt_rows) else np.nan
 
     offset = (hx - axis_x(hy)) * sx
-    # вершина малого вертела в координатах исходного снимка — для разметки на картинке
+    # наибольший выступ и сам анализируемый участок контура — в координатах исходного снимка, для разметки
+    to_x = (lambda x: float(x)) if lm["medial"] == "right" else (lambda x: float(mask.shape[1] - 1 - x))
     peak = int(np.argmax(bump))
-    peak_x = float(edge[peak]) if lm["medial"] == "right" else float(mask.shape[1] - 1 - edge[peak])
+    peak_x = to_x(edge[peak])
+    contour = [(to_x(x), float(r)) for x, r in zip(edge[::2], band[::2])]
     # угол шейки: от центра головки к точке оси диафиза на уровне малого вертела
     neck_dx = (hx - axis_x(hy + radius * 2)) * sx
     neck_dy = radius * 2 * sy
@@ -115,6 +121,7 @@ def measure(array: np.ndarray, spacing: Spacing, side: str | None, mask: np.ndar
         rot_lt_bump_mm=float(bump.max()),
         rot_lt_peak_x=peak_x,
         rot_lt_peak_y=float(band[peak]),
+        rot_lt_contour=contour,
         rot_lt_area_mm2=float(np.clip(bump, 0, None).sum() * sy * sx),
         rot_lt_chord_mm=float(over_chord.max()),
         rot_offset_mm=float(offset),

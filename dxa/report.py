@@ -22,6 +22,7 @@ from . import axis, roi
 SC_CLASS = "1.2.840.10008.5.1.4.1.1.7"        # Secondary Capture Image Storage
 SR_CLASS = "1.2.840.10008.5.1.4.1.1.88.11"    # Basic Text SR Storage
 RED, GREEN, YELLOW, CYAN = (230, 50, 40), (60, 200, 80), (255, 215, 0), (0, 190, 255)
+LT_VISIBLE_MM = 1.0   # выступ малого вертела меньше этого — «контур гладкий», вершину не рисуем
 
 
 def _font(size):
@@ -89,16 +90,29 @@ def overlay(it) -> P.Image:
                 zx0, zx1 = int(min(hx + 0.3 * r, a.shape[1] - 1)) * scale, a.shape[1] * scale
             d.rectangle([zx0, yz0, zx1, yz1], outline=(170, 170, 255), width=2)
             _label(d, (zx0 + 4, yz0 + 3), "седалищная кость", small, (170, 170, 255))
-            # малый вертел — та же точка, по которой считается ротация (dxa/rotation.py): контур
-            # бедра обрывается там, где он «перескакивает» на седалищную кость, поэтому точка не уходит на таз
+            # ротация (dxa/rotation.py): анализируемый медиальный контур от шейки до диафиза (там малый вертел)
+            # и его наибольший выступ. Выступ не всегда сам вертел — иногда изгиб у шейки (так честнее подписать).
+            # Точку рисуем, только если выступ заметен: у гладкого контура «самая выступающая точка» случайна
+            contour = feats.get("rot_lt_contour") or []
+            bump = feats.get("rot_lt_bump_mm", np.nan)
+            if len(contour) > 1:
+                d.line([(x * scale, y * scale) for x, y in contour], fill=YELLOW, width=2)
             lx, ly = feats.get("rot_lt_peak_x"), feats.get("rot_lt_peak_y")
-            if lx is not None and ly is not None and np.isfinite(lx) and np.isfinite(ly):
-                d.ellipse([(lx - 4) * scale, (ly - 4) * scale, (lx + 4) * scale, (ly + 4) * scale],
-                          outline=YELLOW, width=2)
-                bump = feats.get("rot_lt_bump_mm", np.nan)
-                text = "малый вертел" if not np.isfinite(bump) or bump >= 1.0 else "малый вертел не выступает"
-                tx = lx * scale + 8 if lm["medial"] == "left" else lx * scale - 8 - d.textlength(text, font=small)
-                _label(d, (max(tx, 2), ly * scale - small.size // 2), text, small, YELLOW)
+            visible = np.isfinite(bump) and bump >= LT_VISIBLE_MM
+            if visible and lx is not None and ly is not None and np.isfinite(lx) and np.isfinite(ly):
+                d.ellipse([(lx - 5) * scale, (ly - 5) * scale, (lx + 5) * scale, (ly + 5) * scale],
+                          outline=YELLOW, width=3)
+                ax, ay, text = lx, ly, f"наибольший выступ контура {bump:.1f} мм"
+            elif len(contour) > 1:
+                ax, ay = contour[len(contour) // 2]
+                text = f"контур гладкий, малый вертел не выступает ({bump:.1f} мм)" if np.isfinite(bump) else "контур не измерен"
+            else:
+                ax = None
+            if ax is not None:
+                w = d.textlength(text, font=small)
+                tx = ax * scale + 14 if lm["medial"] == "right" else ax * scale - 14 - w
+                tx = min(max(tx, 2), img.width - w - 4)
+                _label(d, (tx, ay * scale - small.size // 2), text, small, YELLOW)
             if lm.get("reliable", True):
                 x0, y0, x1, y1 = [v * scale for v in lm["box"]]
                 ok = not crit.get("Некорректная область интереса", (0,))[0]
