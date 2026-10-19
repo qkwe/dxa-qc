@@ -56,13 +56,36 @@ class Item:
     image_uid: str = ""
     instance: int = 0
     duplicate_of: str | None = None
+    duplicate_src: "Item | None" = None   # сам исходный снимок (а не поиск по UID: у копии он может совпадать)
+    loader: object = None                 # загрузчик байтов файла (снимок подгружается по исследованию)
     region: str | None = None
     side: str | None = None
     result: dict = field(default_factory=dict)
 
+    def load(self):
+        if self.array is None and self.loader is not None and not self.error:
+            try:
+                _open(self, self.loader(), True)
+            except Exception as e:
+                self.error = f"не удалось прочитать DICOM: {e}"
+
+    def unload(self):
+        """Освободить снимок после обработки исследования (заголовок для отчёта уже не нужен)."""
+        self.array = None
+        self.ds = None
+
+
+_SKIP_EXT = (".xlsx", ".csv", ".txt", ".pdf", ".json", ".md")
+
+
+class Cancelled(Exception):
+    """Обработка остановлена пользователем (кнопка «Остановить» / API cancel)."""
+
 
 def _iter_sources(src: str | Path):
-    """(имя, байты) для всех файлов каталога или zip-архива (включая вложенные zip)."""
+    """(имя, загрузчик байтов) для всех файлов каталога или zip-архива (включая вложенные zip).
+
+    Байты читаются только по запросу: при большом входе в памяти не держатся все файлы сразу."""
     src = Path(src)
     if src.is_file() and zipfile.is_zipfile(src):
         yield from _iter_zip(zipfile.ZipFile(src), src.name)
@@ -71,8 +94,8 @@ def _iter_sources(src: str | Path):
         if p.is_file():
             if p.suffix.lower() == ".zip" and zipfile.is_zipfile(p):
                 yield from _iter_zip(zipfile.ZipFile(p), str(p))
-            elif p.suffix.lower() not in (".xlsx", ".csv", ".txt", ".pdf", ".json", ".md"):
-                yield str(p), p.read_bytes()
+            elif p.suffix.lower() not in _SKIP_EXT:
+                yield str(p), p.read_bytes
 
 
 def _iter_zip(z: zipfile.ZipFile, prefix: str):
@@ -85,44 +108,61 @@ def _iter_zip(z: zipfile.ZipFile, prefix: str):
                 name = name.encode("cp437").decode("cp866")
             except (UnicodeEncodeError, UnicodeDecodeError):
                 pass
-        data = z.read(info)
         if name.lower().endswith(".zip"):
-            yield from _iter_zip(zipfile.ZipFile(io.BytesIO(data)), f"{prefix}/{name}")
-        elif not name.lower().endswith((".xlsx", ".csv", ".txt", ".pdf", ".json", ".md")):
-            yield f"{prefix}/{name}", data
+            yield from _iter_zip(zipfile.ZipFile(io.BytesIO(z.read(info))), f"{prefix}/{name}")
+        elif not name.lower().endswith(_SKIP_EXT):
+            yield f"{prefix}/{name}", (lambda z=z, info=info: z.read(info))
 
 
-def read_items(src) -> list[Item]:
+def _decode(ds) -> np.ndarray:
+    arr = np.asarray(ds.pixel_array)
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        arr = arr[..., :3].mean(axis=-1)
+    elif arr.ndim == 3:
+        arr = arr[0]
+    if getattr(ds, "PhotometricInterpretation", "") == "MONOCHROME1":
+        arr = arr.max() - arr
+    return arr
+
+
+def _open(it: Item, data: bytes, pixels: bool):
+    ds = pydicom.dcmread(io.BytesIO(data), force=True)
+    if str(ds.get("Manufacturer", "") or "").startswith("DXA-QC"):
+        # наша же доп. серия (разметка DICOM SC) из series.zip: не исходный снимок, а копия
+        # с нарисованными линиями ×3 — анализировать её нельзя
+        raise ValueError("это доп. серия DXA-QC (разметка или заключение), а не исходный снимок — "
+                         "загрузите исходные DICOM")
+    if "PixelData" not in ds:
+        if ds.get("SOPClassUID") or ds.get("DirectoryRecordSequence"):
+            return None  # настоящий DICOM без изображения (SR, DICOMDIR) — не наш вход
+        raise ValueError("файл не является DICOM-изображением")
+    it.study_uid = str(ds.get("StudyInstanceUID", "") or Path(it.path).parent.name)
+    it.image_uid = str(ds.get("SOPInstanceUID", "") or Path(it.path).name)
+    it.instance = int(ds.get("InstanceNumber", 0) or 0)
+    if pixels:
+        it.ds, it.array = ds, _decode(ds)
+    return it
+
+
+def read_items(src, pixels: bool = True, should_stop=None, on_read=None) -> list[Item]:
+    """Файлы входа как Item. pixels=False — только заголовки (группировка по исследованиям без
+    загрузки всех снимков в память); снимок подгружается потом через Item.load()."""
     items = []
-    for name, data in _iter_sources(src):
+    for n, (name, load) in enumerate(_iter_sources(src)):
+        if should_stop and n % 20 == 0 and should_stop():
+            raise Cancelled()
         it = Item(path=name)
+        it.loader = load
         try:
-            ds = pydicom.dcmread(io.BytesIO(data), force=True)
-            if str(ds.get("Manufacturer", "") or "").startswith("DXA-QC"):
-                # наша же доп. серия (разметка DICOM SC) из series.zip: не исходный снимок, а копия
-                # с нарисованными линиями ×3 — анализировать её нельзя
-                raise ValueError("это доп. серия DXA-QC (разметка или заключение), а не исходный снимок — "
-                                 "загрузите исходные DICOM")
-            if "PixelData" not in ds:
-                if ds.get("SOPClassUID") or ds.get("DirectoryRecordSequence"):
-                    continue  # настоящий DICOM без изображения (SR, DICOMDIR) — не наш вход
-                raise ValueError("файл не является DICOM-изображением")
-            arr = np.asarray(ds.pixel_array)
-            if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-                arr = arr[..., :3].mean(axis=-1)
-            elif arr.ndim == 3:
-                arr = arr[0]
-            if getattr(ds, "PhotometricInterpretation", "") == "MONOCHROME1":
-                arr = arr.max() - arr
-            it.ds, it.array = ds, arr
-            it.study_uid = str(ds.get("StudyInstanceUID", "") or Path(name).parent.name)
-            it.image_uid = str(ds.get("SOPInstanceUID", "") or Path(name).name)
-            it.instance = int(ds.get("InstanceNumber", 0) or 0)
+            if _open(it, load(), pixels) is None:
+                continue
         except Exception as e:  # битый или не-DICOM файл
             it.error = f"не удалось прочитать DICOM: {e}"
             it.study_uid = Path(name).parent.name
             it.image_uid = Path(name).name
         items.append(it)
+        if on_read and n % 20 == 0:
+            on_read(len(items))
     return items
 
 
@@ -204,14 +244,24 @@ class Service:
         return anat, "по анатомии (головка медиально)"
 
     def process(self, src, series_dir: str | Path | None = None, progress=None,
-                settings: Settings | None = None) -> list[dict]:
+                settings: Settings | None = None, should_stop=None, on_read=None) -> list[dict]:
+        """should_stop() -> True — остановить: возвращаются строки уже обработанных исследований
+        (исключение Cancelled несёт их в .rows). on_read(n) — сколько файлов прочитано (первый проход)."""
         st = settings or self.settings
-        items = read_items(src)
+        # проход 1: только заголовки — группировка по исследованиям, все снимки в память не грузим
+        items = read_items(src, pixels=False, should_stop=should_stop, on_read=on_read)
         by_study = defaultdict(list)
         for it in items:
             by_study[it.study_uid].append(it)
         rows = []
         for n, (study, group) in enumerate(by_study.items()):
+            if should_stop and should_stop():
+                err = Cancelled()
+                err.rows = rows
+                raise err
+            # проход 2: исследование целиком — снимки подгружаются и освобождаются после записи
+            for it in group:
+                it.load()
             t0 = time.time()
             seen = {}
             for it in sorted(group, key=lambda i: i.instance):
@@ -219,7 +269,7 @@ class Service:
                     continue
                 key = it.array.tobytes()
                 if key in seen:  # копия уже обработанного изображения
-                    it.duplicate_of = seen[key].image_uid
+                    it.duplicate_of, it.duplicate_src = seen[key].image_uid, seen[key]
                     continue
                 seen[key] = it
                 try:
@@ -228,28 +278,29 @@ class Service:
                     it.error = f"{type(e).__name__}: {e}"
                     it.result["trace"] = traceback.format_exc(limit=3)
             for it in group:
-                src_it = next((s for s in group if s.image_uid == it.duplicate_of), None) if it.duplicate_of else it
-                if src_it is not it and src_it is not None:
+                src_it = it.duplicate_src
+                if src_it is not None:
                     it.result, it.region, it.side, it.error = src_it.result, src_it.region, src_it.side, src_it.error
             elapsed = (time.time() - t0) / max(len(group), 1)
             first = len(rows)
+            overlay_of = {}
             for it in group:
                 rows.append(self._row(it, elapsed))
-                if series_dir and not it.error and not it.duplicate_of:
+                if series_dir and not it.error and not it.duplicate_src:
                     try:
                         from . import report
                         files = report.write_series(it, Path(series_dir))
                         for key, path in files.items():  # overlay и варианты: overlay_peak, overlay_fo
                             rows[-1][key] = Path(path).relative_to(Path(series_dir)).as_posix()
+                        overlay_of[id(it)] = {k: v for k, v in rows[-1].items() if k.startswith("overlay")}
                     except Exception as e:
                         rows[-1]["error"] = (rows[-1].get("error") or "") + f" доп. серия: {e}"
             # копия показывает ту же картинку, что и исходный снимок (доп. серия пишется один раз)
-            source = {r["image_uid"]: r for r in rows[first:] if r.get("overlay")}
-            for r in rows[first:]:
-                if r["duplicate_of"] and r["duplicate_of"] in source:
-                    for key in ("overlay", "overlay_peak", "overlay_fo"):
-                        if key in source[r["duplicate_of"]]:
-                            r[key] = source[r["duplicate_of"]][key]
+            for it, r in zip(group, rows[first:]):
+                if it.duplicate_src is not None:
+                    r.update(overlay_of.get(id(it.duplicate_src), {}))
+            for it in group:
+                it.unload()
             if progress:
                 progress(n + 1, len(by_study))
         return rows

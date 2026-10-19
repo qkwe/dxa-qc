@@ -8,6 +8,7 @@ GET  /api/settings             — настройки по умолчанию, �
 POST /api/jobs                 — загрузка zip / DICOM-файлов (form-data: files, необязательно settings — JSON)
 POST /api/jobs/path            — обработка каталога на сервере: {"path": "/data/input", "settings": {...}}
 GET  /api/jobs/{id}            — статус и строки результата
+POST /api/jobs/{id}/cancel     — остановить обработку (уже обработанное сохраняется в отчёт)
 GET  /api/jobs/{id}/results.xlsx | results.csv | series.zip | settings.json
 GET  /api/jobs/{id}/overlay/{path} — PNG с разметкой
 
@@ -30,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from .pipeline import Service
+from .pipeline import Cancelled, Service
 from .predict import save_table
 from .settings import Settings, describe
 
@@ -81,13 +82,23 @@ def _run(job_id: str, src: Path, settings: Settings):
     try:
         t0 = time.time()
         rows = service().process(src, out / "series", progress=lambda i, n: job.update(progress=[i, n]),
-                                 settings=settings)
+                                 settings=settings, should_stop=lambda: bool(job.get("cancel")),
+                                 on_read=lambda n: job.update(read=n))
         save_table(rows, out / "results.xlsx", settings)
         if (out / "series").exists():
             shutil.make_archive(str(out / "series"), "zip", out / "series")
         job.update(status="done", rows=rows, seconds=round(time.time() - t0, 1))
+    except Cancelled as c:
+        # остановлено пользователем: отчёт по уже обработанным исследованиям
+        rows = getattr(c, "rows", [])
+        if rows:
+            save_table(rows, out / "results.xlsx", settings)
+            if (out / "series").exists():
+                shutil.make_archive(str(out / "series"), "zip", out / "series")
+        job.update(status="cancelled", rows=rows, seconds=round(time.time() - t0, 1))
     except Exception as e:
         job.update(status="error", error=f"{e}", trace=traceback.format_exc(limit=5))
+    job.pop("cancel", None)
     _save_job(job_id)
 
 
@@ -142,7 +153,9 @@ async def create_job(files: list[UploadFile] = File(...), settings: str = Form("
     src = JOBS / job_id / "input"
     src.mkdir(parents=True, exist_ok=True)
     for f in files:
-        _upload_path(src, f.filename).write_bytes(await f.read())
+        # на диск по частям: большой архив не держим в памяти целиком
+        with open(_upload_path(src, f.filename), "wb") as out:
+            shutil.copyfileobj(f.file, out, length=1 << 20)
     return _start(src, job_id, st)
 
 
@@ -157,6 +170,18 @@ def create_job_path(body: dict):
     return _start(path, uuid.uuid4().hex[:12], st)
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    """Остановить обработку: текущий файл/исследование дорабатывается, остальное — нет."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "нет такого задания")
+    if job["status"] == "running":
+        job["cancel"] = True
+        job["status_note"] = "останавливается..."
+    return {"id": job_id, "status": job["status"]}
+
+
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str):
     job = _jobs.get(job_id)
@@ -165,7 +190,7 @@ def job_status(job_id: str):
         if not saved.exists():
             raise HTTPException(404, "нет такого задания")
         job = json.loads(saved.read_text(encoding="utf-8"))
-    return JSONResponse({k: v for k, v in job.items() if k != "trace"})
+    return JSONResponse({k: v for k, v in job.items() if k not in ("trace", "cancel")})
 
 
 @app.get("/api/jobs/{job_id}/{name}")

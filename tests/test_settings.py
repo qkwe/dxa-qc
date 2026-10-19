@@ -215,3 +215,37 @@ def test_rescaled_copies_give_same_verdicts(tmp_path):
     for r in rows:
         region = "spine" if r["anatomical_region"].startswith("Пояснич") else "femur"
         assert r["violation_type"] == orig[(region, r["side"])], r["path_to_study"]
+
+
+def test_cancel_returns_processed_part(tmp_path):
+    """Остановка: исключение Cancelled несёт строки уже обработанных исследований, остальное не трогается."""
+    if not MODEL.exists() or not Path("C:/dxa_test").exists():
+        pytest.skip("нет модели или тестового фрагмента")
+    from dxa.pipeline import Cancelled, Service
+
+    calls = {"n": 0}
+
+    def stop_after_first_study():
+        calls["n"] += 1
+        return calls["n"] > 2   # проход чтения — 1 проверка, затем перед 1-м исследованием — нет, перед 2-м — да
+
+    with pytest.raises(Cancelled) as err:
+        Service(str(MODEL)).process("C:/dxa_test", should_stop=stop_after_first_study)
+    assert 0 < len(err.value.rows) < 3
+
+
+def test_cancel_returns_processed_part():
+    """Остановка: исключение Cancelled несёт строки уже обработанных исследований, остальное не трогается."""
+    if not MODEL.exists() or not Path("C:/dxa_test").exists():
+        pytest.skip("нет модели или тестового фрагмента")
+    from dxa.pipeline import Cancelled, Service
+
+    calls = {"n": 0}
+
+    def stop_before_second_study():
+        calls["n"] += 1
+        return calls["n"] > 2   # 1-я проверка — при чтении, 2-я — перед 1-м исследованием, 3-я — перед 2-м
+
+    with pytest.raises(Cancelled) as err:
+        Service(str(MODEL)).process("C:/dxa_test", should_stop=stop_before_second_study)
+    assert 0 < len(err.value.rows) < 3

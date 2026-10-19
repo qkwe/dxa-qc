@@ -101,6 +101,7 @@
     <button id="pickdir" title="Выбрать каталог с исследованиями целиком (с подпапками)">Папка...</button>
     <input type="file" id="dir" webkitdirectory multiple style="display:none">
     <button id="run" disabled>▶ Обработать</button>
+    <button id="stop" disabled title="Прервать загрузку или остановить обработку (уже обработанное сохранится)">■ Остановить</button>
     <div class="sep"></div>
     <button id="opts" title="Режим чувствительности, пороги, проверяемые критерии">⚙ Настройки...</button>
     <button id="view" disabled title="Открыть выбранный снимок с разметкой в полном размере (также — двойной щелчок по строке)">🔍 Просмотр</button>
@@ -271,38 +272,84 @@ $("opts").onclick = () => $("settings").classList.toggle("open");
 $("closeopts").onclick = () => $("settings").classList.remove("open");
 $("reset").onclick = () => { opts = JSON.parse(JSON.stringify(info.service)); $("optmsg").textContent = ""; syncSettings(); };
 
-$("run").onclick = async () => {
+// загрузка — через XMLHttpRequest: виден процент и её можно прервать кнопкой «Остановить»
+let upload = null;
+function busy(on) {
+  $("run").disabled = on || !picked.length;
+  $("stop").disabled = !on;
+  $("files").disabled = $("pickdir").disabled = on;
+}
+
+$("run").onclick = () => {
+  if ($("optmsg").textContent) { $("status").textContent = "ОШИБКА В НАСТРОЙКАХ: " + $("optmsg").textContent; return; }
   const fd = new FormData();
   for (const f of picked) fd.append("files", f, f.webkitRelativePath || f.name);
-  if ($("optmsg").textContent) { $("status").textContent = "ОШИБКА В НАСТРОЙКАХ: " + $("optmsg").textContent; return; }
   fd.append("settings", JSON.stringify(changedOpts()));
-  $("run").disabled = true;
-  $("status").textContent = "Загрузка файлов на сервер...";
+  busy(true);
   for (const id of ["dlx", "dlc", "dls"]) $(id).style.display = "none";
-  $("prog").className = "progress sunken"; $("bartext").textContent = ""; $("bar").style.width = "0";
-  try {
-    const r = await fetch("api/jobs", {method: "POST", body: fd});
-    if (!r.ok) throw new Error(await r.text());
-    job = (await r.json()).id;
+  $("prog").className = "progress sunken"; $("bar").style.width = "0";
+  const total = picked.reduce((a, f) => a + f.size, 0);
+  $("status").textContent = `Загрузка ${picked.length} файл(ов), ${(total / 1048576).toFixed(1)} МБ...`;
+  const xhr = new XMLHttpRequest();
+  upload = xhr;
+  xhr.open("POST", "api/jobs");
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pc = Math.round(100 * e.loaded / e.total);
+    $("bar").style.width = pc + "%"; $("bartext").textContent = `загрузка ${pc}%`;
+  };
+  xhr.onload = () => {
+    upload = null;
+    if (xhr.status !== 200) {
+      let msg = xhr.responseText;
+      try { msg = JSON.parse(xhr.responseText).detail || msg; } catch (e) { /* не JSON */ }
+      $("status").textContent = "ОШИБКА: " + msg; busy(false); return;
+    }
+    job = JSON.parse(xhr.responseText).id;
+    $("bar").style.width = "0"; $("bartext").textContent = "";
     poll();
-  } catch (e) {
-    $("status").textContent = "ОШИБКА: " + e.message;
-    $("run").disabled = !picked.length;
+  };
+  xhr.onerror = () => { upload = null; $("status").textContent = "ОШИБКА: сервис недоступен"; busy(false); };
+  xhr.onabort = () => {
+    upload = null; busy(false);
+    $("prog").className = "progress sunken failed"; $("bar").style.width = "100%"; $("bartext").textContent = "Остановлено";
+    $("status").textContent = "Загрузка остановлена — задание не создано, обработка не начиналась.";
+  };
+  xhr.send(fd);
+};
+
+$("stop").onclick = async () => {
+  $("stop").disabled = true;
+  if (upload) { upload.abort(); return; }                       // ещё грузится — просто прерываем
+  if (job) {                                                     // уже обрабатывается — просим сервер остановиться
+    $("status").textContent = "Останавливается: дорабатывается текущее исследование...";
+    try { await fetch(`api/jobs/${job}/cancel`, {method: "POST"}); } catch (e) { /* статус покажет poll */ }
   }
 };
 
 async function poll() {
-  const r = await fetch("api/jobs/" + job);
-  const j = await r.json();
+  let j;
+  try {
+    const r = await fetch("api/jobs/" + job);
+    if (!r.ok) throw new Error(r.status === 404 ? "задание не найдено" : "HTTP " + r.status);
+    j = await r.json();
+  } catch (e) {
+    $("status").textContent = "Нет связи с сервисом (" + e.message + "), повтор...";
+    setTimeout(poll, 2000);
+    return;
+  }
   const [i, n] = j.progress || [0, 0];
   $("bar").style.width = n ? (100 * i / n) + "%" : "15%";
-  $("bartext").textContent = n ? `${i} / ${n}` : "";
+  $("bartext").textContent = n ? `${i} / ${n}` : (j.read ? `файлов ${j.read}` : "");
   if (j.status === "running") {
-    $("status").textContent = `Идёт обработка... исследование ${i} из ${n || "?"}. Не закрывайте окно.`;
+    $("stop").disabled = false; $("run").disabled = true;
+    $("status").textContent = n ? `Идёт обработка... исследование ${i} из ${n}. Не закрывайте окно.`
+                                : `Чтение файлов... прочитано ${j.read || 0}. Не закрывайте окно.`;
+    if (j.status_note) $("status").textContent = "Останавливается: дорабатывается текущее исследование...";
     setTimeout(poll, 1000);
     return;
   }
-  $("run").disabled = !picked.length;
+  busy(false);
   if (j.status === "error") {
     $("status").textContent = "ОШИБКА ОБРАБОТКИ: " + j.error;
     $("prog").className = "progress sunken failed"; $("bar").style.width = "100%"; $("bartext").textContent = "Ошибка";
@@ -310,14 +357,19 @@ async function poll() {
   }
   rows = j.rows || [];
   current = null; $("view").disabled = true;
-  $("bar").style.width = "100%";
-  $("prog").className = "progress sunken done"; $("bartext").textContent = "✓ Готово";
   const bad = rows.filter((r) => r.quality_class === 1).length;
   const fail = rows.filter((r) => r.processing_status !== "Success").length;
-  $("status").textContent = `Обработка завершена за ${j.seconds} с. С нарушениями: ${bad}. Ошибок: ${fail}.`;
+  if (j.status === "cancelled") {
+    $("prog").className = "progress sunken failed"; $("bar").style.width = "100%"; $("bartext").textContent = "Остановлено";
+    $("status").textContent = `Остановлено пользователем. Обработано файлов: ${rows.length} (исследований ${i} из ${n || "?"}). С нарушениями: ${bad}.`;
+  } else {
+    $("bar").style.width = "100%";
+    $("prog").className = "progress sunken done"; $("bartext").textContent = "✓ Готово";
+    $("status").textContent = `Обработка завершена за ${j.seconds} с. С нарушениями: ${bad}. Ошибок: ${fail}.`;
+  }
   $("count").textContent = "Файлов: " + rows.length;
   for (const [id, f] of [["dlx", "results.xlsx"], ["dlc", "results.csv"], ["dls", "series.zip"]]) {
-    $(id).href = `api/jobs/${job}/${f}`; $(id).style.display = "";
+    $(id).href = `api/jobs/${job}/${f}`; $(id).style.display = rows.length ? "" : "none";
   }
   render();
 }
