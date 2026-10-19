@@ -9,6 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DXA_JOBS=/data/jobs \
+    DXA_FEEDBACK=/data/feedback \
     DXA_INPUT_ROOTS=/data
 
 # шрифт с кириллицей для подписей на доп. сериях; curl — для healthcheck

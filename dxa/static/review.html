@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DXA-QC — разметка врача и дообучение</title>
+<style>
+  :root { --face: #d4d0c8; --light: #ffffff; --shadow: #808080; --dark: #404040; --title1: #0a246a; --title2: #a6caf0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #3a6ea5; font: 12px Tahoma, Verdana, Arial, sans-serif; color: #000; }
+  .window { margin: 8px; background: var(--face); border: 2px solid; border-color: var(--light) var(--dark) var(--dark) var(--light); }
+  .titlebar { background: linear-gradient(90deg, var(--title1), var(--title2)); color: #fff; font-weight: bold; padding: 3px 6px; }
+  .toolbar { padding: 4px 6px; border-bottom: 1px solid var(--shadow); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  button, a.btn { font: 11px Tahoma, sans-serif; background: var(--face); color: #000; padding: 3px 10px; text-decoration: none; cursor: pointer;
+          border: 2px solid; border-color: var(--light) var(--dark) var(--dark) var(--light); display: inline-block; }
+  button:disabled { color: var(--shadow); cursor: default; }
+  button.on { border-color: var(--dark) var(--light) var(--light) var(--dark); background: #c0c0c0; }
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 8px; padding: 8px; }
+  fieldset { border: 1px solid var(--shadow); margin: 0 0 8px; padding: 8px; background: var(--face); min-width: 0; }
+  legend { padding: 0 4px; font-weight: bold; }
+  #stage { position: relative; background: #000; display: inline-block; max-width: 100%; }
+  #stage img { display: block; max-width: 100%; max-height: 72vh; }
+  #stage canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; cursor: crosshair; }
+  #stage.nodraw canvas { cursor: default; }
+  .crit { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 8px; align-items: center; margin: 4px 0; }
+  .crit .chg { background: #ffff99; }
+  .muted { color: #404040; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  th, td { border: 1px solid #b0b0b0; padding: 3px 6px; text-align: left; vertical-align: top; }
+  th { background: #ece9d8; font-weight: normal; }
+  td.num { text-align: right; font-family: "Courier New", monospace; white-space: nowrap; }
+  td.better { background: #e6f4e6; } td.worse { background: #ffd6d6; }
+  textarea { width: 100%; font: 11px Tahoma, sans-serif; }
+  .msg { padding: 4px 6px; background: #ffffe1; border: 1px solid #000; margin: 4px 0; }
+  .wrap { overflow-x: auto; }
+  @media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">DXA-QC — разметка врача и дообучение</div>
+  <div class="toolbar">
+    <a class="btn" id="back" href="./">← К журналу</a>
+    <button id="prev" disabled>◀ Предыдущий снимок</button>
+    <button id="next" disabled>Следующий снимок ▶</button>
+    <span class="muted" id="where"></span>
+  </div>
+  <div class="main">
+    <div>
+      <fieldset>
+        <legend>Снимок <span class="muted" id="hint"></span></legend>
+        <div id="stage" class="nodraw"><img id="img" alt=""><canvas id="cv"></canvas></div>
+        <div style="margin-top:6px">
+          <button id="drawbtn" disabled title="Нажмите и обведите прямоугольником пропущенный посторонний предмет">▭ Обвести предмет</button>
+          <button id="undo" disabled>Убрать последнюю рамку</button>
+          <span class="muted" id="nboxes"></span>
+        </div>
+      </fieldset>
+    </div>
+    <div>
+      <fieldset>
+        <legend>Заключение врача</legend>
+        <div id="info" class="muted">Откройте снимок из журнала: выберите строку и нажмите «✎ Разметка врача».</div>
+        <div id="crits"></div>
+        <div class="muted" style="margin:6px 0 2px">Комментарий</div>
+        <textarea id="note" rows="3" placeholder="необязательно"></textarea>
+        <div style="margin-top:6px"><button id="save" disabled>✔ Сохранить разметку</button> <span id="savemsg"></span></div>
+        <div class="muted" style="margin-top:6px">Отмеченные вручную значения подсвечены. Разметка (исходный DICOM и метки)
+          попадает в набор дообучения; на работу сервиса она не влияет, пока новая модель не будет принята.</div>
+      </fieldset>
+    </div>
+  </div>
+  <div style="padding: 0 8px 8px">
+    <fieldset>
+      <legend>Набор дообучения (разметка врачей)</legend>
+      <div class="wrap" id="fb">загрузка...</div>
+    </fieldset>
+    <fieldset>
+      <legend>Дообучение модели</legend>
+      <div class="muted">Новая модель обучается на наборе организатора и разметке врачей; для неё считаются те же честные
+        метрики (вложенная кросс-валидация по исследованиям). Сервис продолжает работать на прежней модели, пока вы не
+        нажмёте «Применить»; прежняя версия сохраняется, откат — одной кнопкой.</div>
+      <div style="margin:6px 0">
+        <button id="retrain">⟳ Дообучить и пересчитать метрики</button>
+        <button id="rcancel" disabled>■ Остановить</button>
+        <button id="accept" disabled>✔ Применить новую модель</button>
+        <button id="rollback">↶ Откатить к предыдущей</button>
+        <span id="rstatus" class="muted"></span>
+      </div>
+      <div class="wrap" id="cmp"></div>
+    </fieldset>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const CRIT = {"Поясничный отдел позвоночника": ["Некорректная укладка", "Не выравнена ось позвоночника", "Присутствуют посторонние предметы"],
+              "Проксимальный отдел бедра": ["Некорректная укладка", "Некорректная область интереса"]};
+const q = new URLSearchParams(location.search);
+const jobId = q.get("job");
+let rowIdx = Number(q.get("row") || 0), rows = [], boxes = [], drawing = false, start = null;
+if (jobId) $("back").href = "./?job=" + encodeURIComponent(jobId);
+
+// ---------------- снимок и рамки
+const cv = $("cv"), ctx = cv.getContext("2d");
+function sizeCanvas() { cv.width = $("img").naturalWidth || 1; cv.height = $("img").naturalHeight || 1; drawBoxes(); }
+function drawBoxes(tmp) {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.lineWidth = Math.max(3, cv.width / 250); ctx.strokeStyle = "#ff8c00"; ctx.font = `${Math.max(14, cv.width / 50)}px Tahoma`; ctx.fillStyle = "#ff8c00";
+  [...boxes, ...(tmp ? [tmp] : [])].forEach((b, k) => { ctx.strokeRect(b[0], b[1], b[2] - b[0], b[3] - b[1]); if (k < boxes.length) ctx.fillText("врач " + (k + 1), b[0], Math.max(b[1] - 6, 14)); });
+  $("nboxes").textContent = boxes.length ? `рамок: ${boxes.length}` : "";
+  $("undo").disabled = !boxes.length;
+}
+function pos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; }
+cv.onmousedown = (e) => { if (!drawing) return; start = pos(e); };
+cv.onmousemove = (e) => { if (!drawing || !start) return; const p = pos(e); drawBoxes([Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])]); };
+cv.onmouseup = (e) => {
+  if (!drawing || !start) return;
+  const p = pos(e); const b = [Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])];
+  start = null;
+  if (b[2] - b[0] > 6 && b[3] - b[1] > 6) { boxes.push(b); setLabel("Присутствуют посторонние предметы", 1); }
+  drawBoxes();
+};
+$("drawbtn").onclick = () => { drawing = !drawing; $("drawbtn").classList.toggle("on", drawing); $("stage").classList.toggle("nodraw", !drawing); };
+$("undo").onclick = () => { boxes.pop(); drawBoxes(); };
+$("img").onload = sizeCanvas;
+
+// ---------------- критерии
+function setLabel(name, v) { const el = document.querySelector(`input[name="${CSS.escape(name)}"][value="${v}"]`); if (el) { el.checked = true; el.dispatchEvent(new Event("change")); } }
+function showRow() {
+  const r = rows[rowIdx];
+  boxes = []; drawing = false; $("drawbtn").classList.remove("on"); $("stage").classList.add("nodraw");
+  $("prev").disabled = rowIdx <= 0; $("next").disabled = rowIdx >= rows.length - 1;
+  $("where").textContent = rows.length ? `снимок ${rowIdx + 1} из ${rows.length}` : "";
+  $("savemsg").textContent = ""; $("note").value = "";
+  if (!r || r.processing_status !== "Success" || !CRIT[r.anatomical_region]) {
+    $("info").textContent = r ? `Снимок не обработан (${r.error || r.processing_status}) — размечать нечего.` : "Нет снимка.";
+    $("crits").innerHTML = ""; $("save").disabled = true; $("drawbtn").disabled = true; $("img").removeAttribute("src"); return;
+  }
+  const spine = r.anatomical_region.startsWith("Пояснич");
+  $("img").src = r.overlay ? `api/jobs/${jobId}/overlay/${encodeURI(r.overlay)}` : "";
+  $("hint").textContent = spine ? "— «Обвести предмет», затем выделите его мышью" : "";
+  $("drawbtn").disabled = !spine;
+  $("info").innerHTML = `<b>${esc(r.anatomical_region)}${r.side ? " (" + esc(r.side) + ")" : ""}</b><br>` +
+    `Исследование …${esc(String(r.study_uid).slice(-12))}, вероятность нарушения по сервису ${Number(r.quality_prob).toFixed(2)}`;
+  const said = new Set((r.violation_type || "").split(";").map((v) => v.trim()).filter(Boolean));
+  $("crits").innerHTML = CRIT[r.anatomical_region].map((c) =>
+    `<div class="crit" data-c="${esc(c)}"><span>${esc(c)}<br><span class="muted">сервис: ${said.has(c) ? "нарушение" : "норма"}</span></span>` +
+    `<label><input type="radio" name="${esc(c)}" value="0" ${said.has(c) ? "" : "checked"}> норма</label>` +
+    `<label><input type="radio" name="${esc(c)}" value="1" ${said.has(c) ? "checked" : ""}> нарушение</label></div>`).join("");
+  document.querySelectorAll("#crits input").forEach((el) => el.onchange = () => {
+    const box = el.closest(".crit"); const c = box.dataset.c;
+    box.classList.toggle("chg", (document.querySelector(`input[name="${CSS.escape(c)}"]:checked`).value === "1") !== said.has(c));
+  });
+  $("save").disabled = false;
+  drawBoxes();
+}
+$("prev").onclick = () => { rowIdx--; showRow(); };
+$("next").onclick = () => { rowIdx++; showRow(); };
+$("save").onclick = async () => {
+  const r = rows[rowIdx]; const labels = {};
+  CRIT[r.anatomical_region].forEach((c) => { labels[c] = Number(document.querySelector(`input[name="${CSS.escape(c)}"]:checked`).value); });
+  $("save").disabled = true; $("savemsg").textContent = "сохранение...";
+  try {
+    const resp = await fetch("api/feedback", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job: jobId, row: rowIdx, labels, boxes, overlay_size: [cv.width, cv.height], note: $("note").value})});
+    const j = await resp.json();
+    if (!resp.ok) throw new Error(j.detail || resp.status);
+    $("savemsg").textContent = `✔ сохранено (в наборе дообучения: ${j.total})`;
+    loadFeedback();
+  } catch (e) { $("savemsg").textContent = "ОШИБКА: " + e.message; }
+  $("save").disabled = false;
+};
+
+if (jobId) fetch("api/jobs/" + encodeURIComponent(jobId)).then((r) => r.json()).then((j) => {
+  rows = j.rows || []; rowIdx = Math.min(Math.max(rowIdx, 0), Math.max(rows.length - 1, 0)); showRow();
+}).catch(() => { $("info").textContent = "Задание не найдено."; });
+
+// ---------------- набор дообучения
+async function loadFeedback() {
+  const j = await (await fetch("api/feedback")).json();
+  if (!j.items.length) { $("fb").innerHTML = '<span class="muted">Пока пусто.</span>'; return; }
+  $("fb").innerHTML = `<table><tr><th>Когда</th><th>Область</th><th>Врач: нарушения</th><th>Сервис говорил</th><th>Рамок</th><th>Комментарий</th><th></th></tr>` +
+    j.items.slice().reverse().map((e) => `<tr><td>${esc(e.created)}</td><td>${e.region === "spine" ? "позвоночник" : "бедро"}${e.side ? " (" + (e.side === "l" ? "левое" : "правое") + ")" : ""}</td>` +
+      `<td>${esc(Object.entries(e.labels).filter(([, v]) => v).map(([k]) => k).join("; ") || "нет (качественное)")}</td>` +
+      `<td>${esc((e.source || {}).service_verdict || "нет нарушений")}</td><td class="num">${e.boxes.length}</td><td>${esc(e.note)}</td>` +
+      `<td><button onclick="delFb('${e.id}')">удалить</button></td></tr>`).join("") + "</table>";
+}
+async function delFb(id) { if (!confirm("Удалить эту разметку из набора дообучения?")) return; await fetch("api/feedback/" + id, {method: "DELETE"}); loadFeedback(); }
+loadFeedback();
+
+// ---------------- дообучение
+const f3 = (x) => (x == null ? "—" : Number(x).toFixed(3));
+function cmpTable(cur, cand) {
+  const keys = Object.keys(cand || cur || {}).filter((k) => typeof (cand || cur)[k] === "object" && k !== "images");
+  const cell = (a, b, key) => { if (b == null) return `<td class="num">—</td>`; const cls = a == null ? "" : (b > a + 1e-9 ? "better" : (b < a - 1e-9 ? "worse" : ""));
+    return `<td class="num ${cls}">${f3(b)}</td>`; };
+  let html = `<table><tr><th>Показатель</th><th>Действующая: AUC</th><th>Кандидат: AUC</th><th>Действующая: F1</th><th>Кандидат: F1</th></tr>`;
+  for (const k of keys) {
+    const a = (cur || {})[k] || {}, b = (cand || {})[k] || {};
+    html += `<tr><td>${esc(k)}</td><td class="num">${f3(a.auc)}</td>${cell(a.auc, b.auc)}<td class="num">${f3(a.f1)}</td>${cell(a.f1, b.f1)}</tr>`;
+  }
+  html += `<tr><td>macro-F1</td><td></td><td></td><td class="num">${f3((cur || {})["macro-F1"])}</td>${cell((cur || {})["macro-F1"], (cand || {})["macro-F1"])}</tr>`;
+  html += `<tr><td>снимков в оценке</td><td class="num">${(cur || {}).images ?? "—"}</td><td class="num">${(cand || {}).images ?? "—"}</td><td></td><td></td></tr></table>`;
+  return html;
+}
+function agreeTable(a) {
+  if (!a || !a.current || !a.current.images) return "";
+  const p = (x) => (x == null ? "—" : Math.round(100 * x) + "%");
+  return `<p class="muted">Согласие с врачами на размеченных ими снимках (${a.current.images}):</p><table><tr><th></th><th>Действующая модель</th><th>Кандидат</th></tr>` +
+    `<tr><td>совпадение по всем критериям</td><td class="num">${p(a.current.agreement)}</td><td class="num">${p(a.candidate.agreement)}</td></tr>` +
+    (a.current.foreign_found ? `<tr><td>найдено предметов, отмеченных врачом</td><td class="num">${a.current.foreign_found}</td><td class="num">${a.candidate.foreign_found}</td></tr>` : "") +
+    `</table><p class="muted">Внимание: кандидат обучен в том числе на этих снимках — честная оценка в таблице выше (кросс-валидация).</p>`;
+}
+let rtimer = null;
+async function pollRetrain() {
+  const s = await (await fetch("api/retrain")).json();
+  const msg = {idle: "", running: `идёт: ${s.step || ""} (начато в ${s.started})`, done: `готово в ${s.finished}: кандидат ${s.candidate}`,
+               error: "ОШИБКА: " + (s.error || ""), cancelled: "остановлено", accepted: `применена модель ${s.accepted}`, rolled_back: "выполнен откат"}[s.status] || s.status;
+  $("rstatus").textContent = `${msg} · разметок в наборе: ${s.feedback}` + (s.train_data ? "" : " · набор организатора не подключён (DXA_TRAIN_DATA)");
+  $("retrain").disabled = s.status === "running" || !s.train_data || !s.feedback;
+  $("rcancel").disabled = s.status !== "running";
+  $("accept").disabled = s.status !== "done";
+  $("accept").dataset.c = s.candidate || "";
+  $("cmp").innerHTML = (s.current || s.candidate_metrics ? cmpTable(s.current, s.candidate_metrics) : "") + agreeTable(s.agreement);
+  clearTimeout(rtimer); if (s.status === "running") rtimer = setTimeout(pollRetrain, 3000);
+}
+$("retrain").onclick = async () => { const r = await fetch("api/retrain", {method: "POST"}); if (!r.ok) alert((await r.json()).detail); pollRetrain(); };
+$("rcancel").onclick = async () => { await fetch("api/retrain/cancel", {method: "POST"}); pollRetrain(); };
+$("accept").onclick = async () => {
+  if (!confirm("Применить новую модель? Прежняя версия сохранится, откат — кнопкой «Откатить».")) return;
+  const r = await fetch("api/models/accept", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({candidate: $("accept").dataset.c})});
+  alert(r.ok ? "Новая модель применена." : (await r.json()).detail); pollRetrain();
+};
+$("rollback").onclick = async () => {
+  if (!confirm("Вернуть предыдущую версию модели?")) return;
+  const r = await fetch("api/models/rollback", {method: "POST"});
+  alert(r.ok ? "Предыдущая версия восстановлена." : (await r.json()).detail); pollRetrain();
+};
+pollRetrain();
+</script>
+</body>
+</html>

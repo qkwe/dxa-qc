@@ -34,9 +34,15 @@ def main():
     ap.add_argument("--out", default="models/quality_model.joblib")
     ap.add_argument("--cache", default="out/train_geo.pkl", help="кэш измерений (ускоряет повторное обучение)")
     ap.add_argument("--refresh-geo", action="store_true", help="пересчитать измерения, не брать из кэша")
+    ap.add_argument("--feedback", default=None, help="каталог разметки врача (out/feedback) — дообучение")
     args = ap.parse_args()
 
     images = load_dataset(args.data)
+    if args.feedback:
+        from dxa import feedback
+        extra = feedback.load_images(args.feedback)
+        images = feedback.merge(images, extra)
+        print(f"разметка врача: {len(extra)} снимков", flush=True)
     print(f"снимков {len(images)}", flush=True)
     # кэш годится, только если посчитан этим же кодом измерителей (иначе в нём нет новых признаков
     # или они посчитаны по-старому — модель молча обучится на устаревших измерениях)

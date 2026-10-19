@@ -249,3 +249,28 @@ def test_cancel_returns_processed_part():
     with pytest.raises(Cancelled) as err:
         Service(str(MODEL)).process("C:/dxa_test", should_stop=stop_before_second_study)
     assert 0 < len(err.value.rows) < 3
+
+
+def test_feedback_store_and_merge(tmp_path):
+    """Разметка врача: проверка ввода, рамка ставит «посторонние предметы», замена меток при повторе."""
+    if not Path("C:/dxa_test").exists():
+        pytest.skip("нет тестового фрагмента")
+    from dxa import feedback
+    from dxa.data import Image
+
+    dcm = sorted(Path("C:/dxa_test").rglob("*ПОП*.dcm"))[0].read_bytes()
+    labels = {LABEL_POSITIONING: 0, LABEL_AXIS: 0, LABEL_FOREIGN: 0}
+    with pytest.raises(ValueError):
+        feedback.save(dcm, "spine", None, {LABEL_POSITIONING: 0}, [], root=tmp_path)          # не все критерии
+    with pytest.raises(ValueError):
+        feedback.save(dcm, "femur", "l", {LABEL_POSITIONING: 0, LABEL_ROI: 0}, [[1, 1, 9, 9]], root=tmp_path)   # рамка на бедре
+    eid = feedback.save(dcm, "spine", None, labels, [[10, 10, 40, 30], [5, 5, 6, 6]], root=tmp_path)
+    e = feedback.entries(tmp_path)[0]
+    assert e["id"] == eid and e["labels"][LABEL_FOREIGN] == 1 and len(e["boxes"]) == 1   # крошечная рамка отброшена
+    imgs = feedback.load_images(tmp_path)
+    assert len(imgs) == 1 and imgs[0].quality == 1 and imgs[0].region == "spine"
+    base = [Image(study_uid=imgs[0].study_uid, image_uid=imgs[0].image_uid, path=Path("x"), array=imgs[0].array,
+                  region="spine", side=None, instance=0, copies=1, n_images=1, quality=0, labels={LABEL_FOREIGN: 0})]
+    merged = feedback.merge(base, imgs)
+    assert len(merged) == 1 and merged[0].labels[LABEL_FOREIGN] == 1                        # врач заменил метку
+    assert feedback.delete(eid, tmp_path) and not feedback.entries(tmp_path)

@@ -6,6 +6,8 @@ GET  /                         — веб-интерфейс
 GET  /health                   — проверка готовности
 GET  /api/settings             — настройки по умолчанию, пределы и честные метрики режимов
 GET  /metrics, /api/metrics    — страница и данные метрик: CV с 95% ДИ, режимы, поверка, стенд предметов
+GET  /review                   — инструмент врача: подтверждение/исправление вердиктов, обведение предметов,
+                                 дообучение (dxa/review.py: /api/feedback, /api/retrain, /api/models)
 POST /api/jobs                 — загрузка zip / DICOM-файлов (form-data: files, необязательно settings — JSON)
 POST /api/jobs/path            — обработка каталога на сервере: {"path": "/data/input", "settings": {...}}
 GET  /api/jobs/{id}            — статус и строки результата
@@ -53,6 +55,23 @@ def service() -> Service:
         if _service is None:
             _service = Service(MODEL, Settings.load(CONFIG))
     return _service
+
+
+def reload_service():
+    """После принятия новой модели (инструмент врача): следующее задание загрузит её заново."""
+    global _service
+    with _lock:
+        _service = None
+
+
+def job_status_dict(job_id: str) -> dict:
+    job = _jobs.get(job_id)
+    if not job:
+        saved = JOBS / Path(job_id).name / "job.json"
+        if not saved.exists():
+            raise HTTPException(404, "нет такого задания")
+        job = json.loads(saved.read_text(encoding="utf-8"))
+    return job
 
 
 def _settings(raw) -> Settings:
@@ -105,7 +124,7 @@ def _run(job_id: str, src: Path, settings: Settings):
 
 def _start(src: Path, job_id: str, settings: Settings) -> dict:
     _jobs[job_id] = dict(id=job_id, status="running", progress=[0, 0], created=time.time(),
-                         settings=settings.to_dict())
+                         settings=settings.to_dict(), src=str(src))
     threading.Thread(target=_run, args=(job_id, src, settings), daemon=True).start()
     return {"id": job_id, "status": "running"}
 
@@ -202,13 +221,8 @@ def cancel_job(job_id: str):
 
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str):
-    job = _jobs.get(job_id)
-    if not job:
-        saved = JOBS / Path(job_id).name / "job.json"
-        if not saved.exists():
-            raise HTTPException(404, "нет такого задания")
-        job = json.loads(saved.read_text(encoding="utf-8"))
-    return JSONResponse({k: v for k, v in job.items() if k not in ("trace", "cancel")})
+    job = job_status_dict(job_id)
+    return JSONResponse({k: v for k, v in job.items() if k not in ("trace", "cancel", "src")})
 
 
 @app.get("/api/jobs/{job_id}/{name}")
@@ -228,3 +242,9 @@ def overlay(job_id: str, rel: str):
     if base not in path.parents or not path.exists():
         raise HTTPException(404)
     return FileResponse(path)
+
+
+# инструмент врача (отдельный модуль): разметка, дообучение, версии модели
+from . import review  # noqa: E402
+
+app.include_router(review.router)

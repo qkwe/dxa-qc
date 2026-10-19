@@ -105,6 +105,7 @@
     <div class="sep"></div>
     <button id="opts" title="Режим чувствительности, пороги, проверяемые критерии">⚙ Настройки...</button>
     <button id="view" disabled title="Открыть выбранный снимок с разметкой в полном размере (также — двойной щелчок по строке)">🔍 Просмотр</button>
+    <button id="review" disabled title="Подтвердить или исправить заключение по снимку, обвести пропущенный предмет — в набор дообучения">✎ Разметка врача</button>
     <div class="sep"></div>
     <a class="btn" id="dlx" href="#" style="display:none">Отчёт XLSX</a>
     <a class="btn" id="dlc" href="#" style="display:none">Отчёт CSV</a>
@@ -358,7 +359,7 @@ async function poll() {
     return;
   }
   rows = j.rows || [];
-  current = null; $("view").disabled = true;
+  current = null; $("view").disabled = true; $("review").disabled = true;
   const bad = rows.filter((r) => r.quality_class === 1).length;
   const fail = rows.filter((r) => r.processing_status !== "Success").length;
   if (j.status === "cancelled") {
@@ -410,6 +411,7 @@ const overlayUrl = (r) => {
   return `api/jobs/${job}/overlay/${encodeURI(path)}`;
 };
 $("view").onclick = () => { if (overlayUrl(current)) window.open(overlayUrl(current), "_blank"); };
+$("review").onclick = () => { if (current) window.open(`review?job=${encodeURIComponent(job)}&row=${rows.indexOf(current)}`, "_blank"); };
 $("peak").onchange = $("fo").onchange = () => showImage(current);
 
 function showImage(r) {
@@ -426,6 +428,7 @@ function select(tr, r) {
   tr.classList.add("sel");
   current = r;
   $("view").disabled = !r.overlay;
+  $("review").disabled = r.processing_status !== "Success";
   tr.ondblclick = () => $("view").click();
   showImage(r);
   const det = (r.details || "").split(" | ").join("\n");

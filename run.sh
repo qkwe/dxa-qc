@@ -6,6 +6,8 @@
 #   ./run.sh api [настройки.json]                     # веб-интерфейс и API на http://localhost:8000 (порт: PORT=...)
 #   ./run.sh check <НД_для_обучения> [<Для_теста>]    # проверка решения с нуля → ./verification/verification.md
 # Настройки (режим чувствительности, пороги, критерии) — см. config.example.json; без них — как в ТЗ.
+# Инструмент врача (/review) хранит разметку в томе dxa-feedback; для дообучения укажите набор организатора:
+#   TRAIN_DATA=/path/to/НД_для_обучения ./run.sh api
 set -euo pipefail
 
 IMAGE="${IMAGE:-dxa-qc}"
@@ -40,7 +42,11 @@ predict() {
 
 api() {
     local config="${1:-}"
-    local args=(-p "${PORT}:8000")
+    local args=(-p "${PORT}:8000" -v dxa-feedback:/data/feedback)
+    if [[ -n "${TRAIN_DATA:-}" ]]; then
+        [[ -d "${TRAIN_DATA}" ]] || { echo "нет каталога TRAIN_DATA: ${TRAIN_DATA}"; exit 1; }
+        args+=(-v "$(abspath "${TRAIN_DATA}"):/data/train:ro" -e DXA_TRAIN_DATA=/data/train)
+    fi
     if [[ -n "${config}" ]]; then
         check_config "${config}"
         args+=(-v "$(abspath "${config}"):/data/config.json:ro" -e DXA_CONFIG=/data/config.json)

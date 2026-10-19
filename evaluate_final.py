@@ -33,10 +33,16 @@ except Exception:
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True, help="распакованный НД_для_обучения (с xlsx разметкой)")
+ap.add_argument("--feedback", default=None, help="каталог разметки врача (out/feedback) — оценка дообученной системы")
+ap.add_argument("--out", default="out/metrics_final.json", help="куда записать метрики")
 args = ap.parse_args()
 
 SEEDS, FOLDS = 5, 5
-images = [i for i in load_dataset(args.data) if i.quality is not None]
+images = load_dataset(args.data)
+if args.feedback:
+    from dxa import feedback
+    images = feedback.merge(images, feedback.load_images(args.feedback))
+images = [i for i in images if i.quality is not None]
 keys = [f"{i.study_uid}:{i.image_uid}" for i in images]
 feats = [features.geometry(i.array, i.spacing, i.region, i.side) for i in images]
 Path("out").mkdir(exist_ok=True)
@@ -169,5 +175,7 @@ for md in MODES:
     for k in ("spine: Присутствуют посторонние предметы", "femur: Некорректная укладка"):
         print(f"      {k:44s} чувств {res[k]['sens']:.2f}  специф {res[k]['spec']:.2f}  F1 {res[k]['f1']:.3f}")
 report["режимы"] = modes
-json.dump(report, open("out/metrics_final.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-pickle.dump(dict(flags=flags, scores=scores, qprob=qprob, keys=keys), open("out/oof_final.pkl", "wb"))
+report["снимков в оценке"] = len(images)
+Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+json.dump(report, open(args.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+pickle.dump(dict(flags=flags, scores=scores, qprob=qprob, keys=keys), open(Path(args.out).with_name("oof_final.pkl"), "wb"))
