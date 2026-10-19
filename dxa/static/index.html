@@ -388,7 +388,7 @@ function render() {
     if (only && r.quality_class !== 1) return;
     const tr = document.createElement("tr");
     tr.className = r.processing_status !== "Success" ? "fail" : (r.quality_class === 1 ? "bad" : "good");
-    const tags = (r.violation_type || "").split("; ").filter(Boolean).map((v) => `<span class="tag">${esc(v)}</span>`).join("");
+    const tags = (r.violation_type || "").split(";").map((v) => v.trim()).filter(Boolean).map((v) => `<span class="tag">${esc(v)}</span>`).join("");
     const verdict = r.processing_status !== "Success" ? "—" : (r.quality_class === 1 ? '<span class="no">БРАК</span>' : '<span class="ok">НОРМА</span>');
     tr.innerHTML = `<td>${k + 1}</td><td title="${esc(r.study_uid)}">…${esc(String(r.study_uid).slice(-10))}</td>` +
       `<td>${esc(r.anatomical_region)}${r.side ? " (" + esc(r.side) + ")" : ""}</td><td>${verdict}</td><td>${prob(r)}</td><td>${tags}</td>` +

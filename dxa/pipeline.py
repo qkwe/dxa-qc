@@ -37,6 +37,7 @@ SIDE_NAMES = {"l": "левое", "r": "правое"}
 # (252 из 252 снимков обучения). Порог — середина промежутка; меняется в настройках (spine_min_width_px).
 SPINE_MIN_WIDTH_PX = Settings().spine_min_width_px
 # пиксель аппарата организатора ~0.6 мм; снимки вне этого диапазона пересчитываются к 0.6 мм перед измерениями
+MIN_SIDE_PX = 64   # меньше — не снимок DXA (у аппарата организатора 180–405 пикселей)
 NATIVE_PIXEL_MM = (0.4, 1.0)   # = прежний диапазон тега: на снимках аппарата организатора ничего не меняется
 
 # подсказки из тегов и имён файлов (в наборе организатора: ПОП, ЛПОБ, ППОБ)
@@ -67,7 +68,7 @@ class Item:
             try:
                 _open(self, self.loader(), True)
             except Exception as e:
-                self.error = f"не удалось прочитать DICOM: {e}"
+                self.error = f"не удалось прочитать DICOM: {_human(e)}"
 
     def unload(self):
         """Освободить снимок после обработки исследования (заголовок для отчёта уже не нужен)."""
@@ -76,6 +77,11 @@ class Item:
 
 
 _SKIP_EXT = (".xlsx", ".csv", ".txt", ".pdf", ".json", ".md")
+
+
+class NotAnalyzable(Exception):
+    """Снимок прочитан, но анализировать нечего: пустой, крошечный или без искомой анатомии.
+    Это Failure с понятной причиной — а не «норма» по ненайденным измерениям."""
 
 
 class Cancelled(Exception):
@@ -144,6 +150,16 @@ def _open(it: Item, data: bytes, pixels: bool):
     return it
 
 
+def _human(e: Exception) -> str:
+    """Частые сообщения pydicom — по-русски, остальные как есть."""
+    text = str(e)
+    if "number of bytes of pixel data is less" in text:
+        return "файл обрезан или повреждён: данных изображения меньше, чем указано в заголовке"
+    if "File is missing DICOM File Meta" in text or "not a valid DICOM" in text:
+        return "файл не является DICOM"
+    return text
+
+
 def read_items(src, pixels: bool = True, should_stop=None, on_read=None) -> list[Item]:
     """Файлы входа как Item. pixels=False — только заголовки (группировка по исследованиям без
     загрузки всех снимков в память); снимок подгружается потом через Item.load()."""
@@ -157,7 +173,7 @@ def read_items(src, pixels: bool = True, should_stop=None, on_read=None) -> list
             if _open(it, load(), pixels) is None:
                 continue
         except Exception as e:  # битый или не-DICOM файл
-            it.error = f"не удалось прочитать DICOM: {e}"
+            it.error = f"не удалось прочитать DICOM: {_human(e)}"
             it.study_uid = Path(name).parent.name
             it.image_uid = Path(name).name
         items.append(it)
@@ -274,6 +290,8 @@ class Service:
                 seen[key] = it
                 try:
                     self._process_image(it, st)
+                except NotAnalyzable as e:
+                    it.error = str(e)
                 except Exception as e:
                     it.error = f"{type(e).__name__}: {e}"
                     it.result["trace"] = traceback.format_exc(limit=3)
@@ -323,12 +341,23 @@ class Service:
         return (cols * sx / new[0], rows * sy / new[1])
 
     def _process_image(self, it: Item, st: Settings):
+        a = it.array
+        if min(a.shape) < MIN_SIDE_PX:
+            raise NotAnalyzable(f"изображение слишком маленькое для снимка DXA ({a.shape[1]}×{a.shape[0]} пикс.)")
+        if float(np.ptp(a)) == 0:
+            raise NotAnalyzable("изображение пустое: все пиксели одинаковые")
         spacing = self._spacing(it, st)
         it.region, it.result["region_source"] = self._region(it, st)
         spacing = self._to_native(it, spacing)
         if it.region == "femur":
             it.side, it.result["side_source"] = self._side(it, spacing)
         feats = features.geometry(it.array, spacing, it.region, it.side)
+        # анатомия не найдена совсем — решение «нарушений нет» по пустым измерениям было бы ложью
+        if it.region == "spine" and not any(np.isfinite(feats.get(k, np.nan)) for k in ("axis_chord15_deg", "sp_iliac_frac")):
+            raise NotAnalyzable("на снимке не найден позвоночный столб — проверьте, что это снимок DXA поясничного отдела")
+        if it.region == "femur" and not any(np.isfinite(feats.get(k, np.nan))
+                                            for k in ("roi_margin_bottom_cm", "rot_offset_mm", "rot_lt_area_mm2")):
+            raise NotAnalyzable("на снимке не найдены ориентиры бедра (головка, диафиз) — проверьте, что это снимок DXA бедра")
         it.result["features"] = feats
         it.result["spacing"] = spacing
         it.result["criteria"] = self.model.predict(feats, it.region, st)
@@ -354,7 +383,8 @@ class Service:
             "quality_class": (1 if violations else 0) if not it.error else "",
             # «Разъяснения V2», вопрос 8: вероятность нарушения в [0;1]
             "quality_prob": round(it.result.get("quality_prob", 0.0), 4) if not it.error else "",
-            "violation_type": "; ".join(violations) if not it.error else "",
+            # «Разъяснения V2», вопрос 6: несколько нарушений — через «;» (без пробела: при разборе по «;» не будет ведущих пробелов)
+            "violation_type": ";".join(violations) if not it.error else "",
             "processing_status": "Failure" if it.error else "Success",
             "time_of_processing": round(elapsed, 3),
             "details": " | ".join(f"{name}: {text} (вероятность {it.result.get('probs', {}).get(name, 0):.2f})"

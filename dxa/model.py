@@ -67,6 +67,15 @@ def _best_threshold(y: np.ndarray, score: np.ndarray) -> float:
     return float(cands[int(np.argmax(f1))])
 
 
+def _v(x, spec: str = ".1f", unit: str = "") -> str:
+    """Число для заключения; не измерено — так и пишем (а не «nan» или подставленную медиану)."""
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return "не измерено"
+    return f"{x:{spec}}{unit}" if np.isfinite(x) else "не измерено"
+
+
 def _tz(st: Settings, name: str) -> str:
     """«ТЗ » перед значением порога, пока он не изменён пользователем."""
     return "" if st.note(name) else "ТЗ "
@@ -178,7 +187,7 @@ class QualityModel:
             lim, iliac = st.axis_limit_deg, st.iliac_min_frac
             ang = feat.get("axis_chord15_deg", np.nan)
             out[LABEL_AXIS] = (int(np.isfinite(ang) and ang > lim), float(_nan([ang], 0)[0]),
-                               f"наклон оси {ang:.1f}° (допуск {_tz(st, 'axis_limit_deg')}{lim:g}°){st.note('axis_limit_deg')}")
+                               f"наклон оси {_v(ang, '.1f', '°')} (допуск {_tz(st, 'axis_limit_deg')}{lim:g}°){st.note('axis_limit_deg')}")
             fr = feat.get("sp_iliac_frac", np.nan)
             out[LABEL_POSITIONING] = (int(np.isfinite(fr) and fr < iliac), float(-_nan([fr], 0)[0]),
                                       ("гребни подвздошных костей не видны у нижнего края" if np.isfinite(fr) and fr < iliac
@@ -209,12 +218,13 @@ class QualityModel:
             # чтобы вероятность нарушения не зависела от пользовательских порогов
             deficit = max(ROI_BOTTOM_CM - float(_nan([b], 0)[0]), FIELD_MIN_CM - float(_nan([h], FIELD_MIN_CM)[0]))
             out[LABEL_ROI] = (int(short_bottom or short_field), deficit,
-                              f"ниже малого вертела {b:.1f} см (норма {_tz(st, 'roi_bottom_cm')}≥ {bottom_min:g}){st.note('roi_bottom_cm')}; длина скана "
-                              f"{h:.1f} см (минимум {field_min:g}){st.note('field_min_cm')}; сверху {feat.get('roi_margin_top_cm', np.nan):.1f}, "
-                              f"медиально {feat.get('roi_margin_medial_cm', np.nan):.1f} см"
+                              f"ниже малого вертела {_v(b, '.1f', ' см')} (норма {_tz(st, 'roi_bottom_cm')}≥ {bottom_min:g}){st.note('roi_bottom_cm')}; длина скана "
+                              f"{_v(h, '.1f', ' см')} (минимум {field_min:g}){st.note('field_min_cm')}; сверху {_v(feat.get('roi_margin_top_cm'), '.1f', ' см')}, "
+                              f"медиально {_v(feat.get('roi_margin_medial_cm'), '.1f', ' см')}"
                               + ("; скан слишком короткий — бедро не помещается" if short_field else "")
                               + ("; ориентиры ненадёжны — решение только по длине скана" if not rel else ""))
-            area_mm2 = float(_nan([feat.get("rot_lt_area_mm2", np.nan)], self.area_fill)[0])
+            raw_area, raw_off = feat.get("rot_lt_area_mm2", np.nan), feat.get("rot_offset_mm", np.nan)
+            area_mm2 = float(_nan([raw_area], self.area_fill)[0])
             area = float(np.log1p(max(area_mm2, 0.0)))
             off = float(_nan([feat.get("rot_offset_mm", np.nan)], self.off_fill)[0])
             s = float(self._femur_score(np.array([area]), np.array([off]))[0])
@@ -224,8 +234,11 @@ class QualityModel:
             fthr = self.threshold("femur", st.mode)
             rotated = s >= fthr
             out[LABEL_POSITIONING] = (int(rotated or no_ischium), s,
-                                      f"малый вертел {area_mm2:.0f} мм² (норма ~{np.expm1(self.area_norm):.0f}), офсет головки {off:.0f} мм; "
-                                      f"оценка ротации {s:.2f} (порог {fthr:.2f}{mode_note})"
+                                      f"малый вертел {_v(raw_area, '.0f', ' мм²')} (норма ~{np.expm1(self.area_norm):.0f}), "
+                                      f"офсет головки {_v(raw_off, '.0f', ' мм')}; "
+                                      + ("ротация оценена по типичным значениям (контур не измерен); "
+                                         if not (np.isfinite(_nan([raw_area], np.nan)[0]) and np.isfinite(_nan([raw_off], np.nan)[0])) else "")
+                                      + f"оценка ротации {s:.2f} (порог {fthr:.2f}{mode_note})"
                                       + (f"; вероятно {kind}" if rotated else "")
                                       + ("; седалищная кость не попала в кадр" if no_ischium else "")
                                       + st.note("ischium_min_frac"))
