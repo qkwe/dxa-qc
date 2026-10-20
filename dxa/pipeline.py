@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import time
 import traceback
@@ -310,6 +311,13 @@ class Service:
                         files = report.write_series(it, Path(series_dir))
                         for key, path in files.items():  # overlay и варианты: overlay_peak, overlay_fo
                             rows[-1][key] = Path(path).relative_to(Path(series_dir)).as_posix()
+                        if it.result.get("foreign_boxes"):
+                            # рамки сервиса в долях кадра — инструмент врача показывает их поверх картинки разметки
+                            h, w = it.array.shape[:2]
+                            rows[-1]["overlay_fo_boxes"] = json.dumps(
+                                [[round(b["box"][0] / w, 4), round(b["box"][1] / h, 4), round(b["box"][2] / w, 4),
+                                  round(b["box"][3] / h, 4), b["where"]] for b in it.result["foreign_boxes"]],
+                                ensure_ascii=False)
                         overlay_of[id(it)] = {k: v for k, v in rows[-1].items() if k.startswith("overlay")}
                     except Exception as e:
                         rows[-1]["error"] = (rows[-1].get("error") or "") + f" доп. серия: {e}"

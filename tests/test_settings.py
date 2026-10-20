@@ -176,6 +176,13 @@ def test_foreign_objects_outlined(tmp_path):
     assert all((tmp_path / "s" / r["overlay_fo"]).exists() for r in spine)
     clean = [r for r in rows if "Присутствуют посторонние предметы" not in (r["violation_type"] or "")]
     assert not any(r.get("overlay_fo") for r in clean)  # без находки — без рамок
+    # рамки сервиса для инструмента врача: в долях кадра, внутри [0; 1], с зоной
+    import json
+
+    for r in spine:
+        boxes = json.loads(r["overlay_fo_boxes"])
+        assert boxes and all(0 <= b[0] < b[2] <= 1 and 0 <= b[1] < b[3] <= 1 and b[4] for b in boxes)
+    assert not any(r.get("overlay_fo_boxes") for r in clean)
 
 
 @pytest.mark.skipif(not MODEL.exists() or not Path("C:/dxa_test").exists(), reason="нет модели или тестового фрагмента")

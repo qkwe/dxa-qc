@@ -53,8 +53,12 @@
         <div style="margin-top:6px">
           <button id="drawbtn" disabled title="Нажмите и обведите прямоугольником пропущенный посторонний предмет">▭ Обвести предмет</button>
           <button id="undo" disabled>Убрать последнюю рамку</button>
+          <label id="autobox" style="display:none; margin-left:8px"><input type="checkbox" id="auto" checked> найденные сервисом</label>
           <span class="muted" id="nboxes"></span>
         </div>
+        <div class="muted" id="autohint" style="display:none; margin-top:4px">Пунктир — предметы, найденные сервисом: они уже
+          учтены в разметке, обводить их заново не нужно. Ложную рамку — щёлкните по ней (станет серой и не попадёт
+          в разметку); повторный щелчок возвращает. Пропущенный предмет — «Обвести предмет».</div>
       </fieldset>
     </div>
     <div>
@@ -99,20 +103,53 @@ const CRIT = {"Поясничный отдел позвоночника": ["Не
 const q = new URLSearchParams(location.search);
 const jobId = q.get("job");
 let rowIdx = Number(q.get("row") || 0), rows = [], boxes = [], drawing = false, start = null;
+let auto = [];  // рамки сервиса: {b: [x0, y0, x1, y1] в пикселях картинки, where, off: отклонена врачом}
 if (jobId) $("back").href = "./?job=" + encodeURIComponent(jobId);
 
 // ---------------- снимок и рамки
 const cv = $("cv"), ctx = cv.getContext("2d");
-function sizeCanvas() { cv.width = $("img").naturalWidth || 1; cv.height = $("img").naturalHeight || 1; drawBoxes(); }
+function sizeCanvas() {
+  cv.width = $("img").naturalWidth || 1; cv.height = $("img").naturalHeight || 1;
+  const r = rows[rowIdx] || {};
+  let frac = [];
+  try { frac = JSON.parse(r.overlay_fo_boxes || "[]"); } catch (e) { frac = []; }
+  auto = frac.map((f) => ({b: [f[0] * cv.width, f[1] * cv.height, f[2] * cv.width, f[3] * cv.height], where: f[4] || "", off: false}));
+  $("autobox").style.display = auto.length ? "" : "none";
+  drawBoxes();
+}
+const showAuto = () => $("auto").checked && auto.length > 0;
+const autoKept = () => (showAuto() ? auto.filter((a) => !a.off).map((a) => a.b.map(Math.round)) : []);
 function drawBoxes(tmp) {
   ctx.clearRect(0, 0, cv.width, cv.height);
-  ctx.lineWidth = Math.max(3, cv.width / 250); ctx.strokeStyle = "#ff8c00"; ctx.font = `${Math.max(14, cv.width / 50)}px Tahoma`; ctx.fillStyle = "#ff8c00";
+  const lw = Math.max(3, cv.width / 250);
+  ctx.lineWidth = lw; ctx.font = `${Math.max(14, cv.width / 50)}px Tahoma`;
+  if (showAuto()) auto.forEach((a, k) => {
+    const c = a.off ? "#909090" : "#00d0ff";
+    ctx.strokeStyle = c; ctx.fillStyle = c; ctx.setLineDash([3 * lw, 2 * lw]);
+    ctx.strokeRect(a.b[0], a.b[1], a.b[2] - a.b[0], a.b[3] - a.b[1]); ctx.setLineDash([]);
+    ctx.fillText(`сервис ${k + 1}${a.off ? " — не предмет" : ""}`, a.b[0], Math.min(a.b[3] + 18, cv.height - 4));
+  });
+  ctx.strokeStyle = "#ff8c00"; ctx.fillStyle = "#ff8c00";
   [...boxes, ...(tmp ? [tmp] : [])].forEach((b, k) => { ctx.strokeRect(b[0], b[1], b[2] - b[0], b[3] - b[1]); if (k < boxes.length) ctx.fillText("врач " + (k + 1), b[0], Math.max(b[1] - 6, 14)); });
-  $("nboxes").textContent = boxes.length ? `рамок: ${boxes.length}` : "";
+  const kept = autoKept().length;
+  $("nboxes").textContent = boxes.length || kept ? `в разметку: ${kept + boxes.length} (сервис ${kept}, врач ${boxes.length})` : "";
   $("undo").disabled = !boxes.length;
+  $("autohint").style.display = showAuto() ? "" : "none";
 }
 function pos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; }
-cv.onmousedown = (e) => { if (!drawing) return; start = pos(e); };
+cv.onmousedown = (e) => {
+  if (drawing) { start = pos(e); return; }
+  if (!showAuto()) return;
+  const [x, y] = pos(e);  // щелчок по рамке сервиса: «это не предмет» / вернуть
+  const hit = auto.find((a) => x >= a.b[0] && x <= a.b[2] && y >= a.b[1] && y <= a.b[3]);
+  if (hit) {
+    hit.off = !hit.off;
+    // все рамки сервиса отклонены и своих нет — предметов, вероятно, нет; есть принятые — нарушение
+    setLabel("Присутствуют посторонние предметы", autoKept().length || boxes.length ? 1 : 0);
+    drawBoxes();
+  }
+};
+$("auto").onchange = () => drawBoxes();
 cv.onmousemove = (e) => { if (!drawing || !start) return; const p = pos(e); drawBoxes([Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])]); };
 cv.onmouseup = (e) => {
   if (!drawing || !start) return;
@@ -129,7 +166,7 @@ $("img").onload = sizeCanvas;
 function setLabel(name, v) { const el = document.querySelector(`input[name="${CSS.escape(name)}"][value="${v}"]`); if (el) { el.checked = true; el.dispatchEvent(new Event("change")); } }
 function showRow() {
   const r = rows[rowIdx];
-  boxes = []; drawing = false; $("drawbtn").classList.remove("on"); $("stage").classList.add("nodraw");
+  boxes = []; auto = []; drawing = false; $("autobox").style.display = "none"; $("auto").checked = true; $("drawbtn").classList.remove("on"); $("stage").classList.add("nodraw");
   $("prev").disabled = rowIdx <= 0; $("next").disabled = rowIdx >= rows.length - 1;
   $("where").textContent = rows.length ? `снимок ${rowIdx + 1} из ${rows.length}` : "";
   $("savemsg").textContent = ""; $("note").value = "";
@@ -153,17 +190,20 @@ function showRow() {
     box.classList.toggle("chg", (document.querySelector(`input[name="${CSS.escape(c)}"]:checked`).value === "1") !== said.has(c));
   });
   $("save").disabled = false;
-  drawBoxes();
+  // та же картинка (копия снимка) событие load не вызовет — рамки сервиса пересчитываются сразу
+  if ($("img").complete && $("img").naturalWidth) sizeCanvas(); else drawBoxes();
 }
 $("prev").onclick = () => { rowIdx--; showRow(); };
 $("next").onclick = () => { rowIdx++; showRow(); };
 $("save").onclick = async () => {
   const r = rows[rowIdx]; const labels = {};
   CRIT[r.anatomical_region].forEach((c) => { labels[c] = Number(document.querySelector(`input[name="${CSS.escape(c)}"]:checked`).value); });
+  // принятые рамки сервиса идут в разметку вместе с рамками врача — если врач подтвердил, что предметы есть
+  const all = labels["Присутствуют посторонние предметы"] ? [...autoKept(), ...boxes] : boxes;
   $("save").disabled = true; $("savemsg").textContent = "сохранение...";
   try {
     const resp = await fetch("api/feedback", {method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({job: jobId, row: rowIdx, labels, boxes, overlay_size: [cv.width, cv.height], note: $("note").value})});
+      body: JSON.stringify({job: jobId, row: rowIdx, labels, boxes: all, overlay_size: [cv.width, cv.height], note: $("note").value})});
     const j = await resp.json();
     if (!resp.ok) throw new Error(j.detail || resp.status);
     $("savemsg").textContent = `✔ сохранено (в наборе дообучения: ${j.total})`;
