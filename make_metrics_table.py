@@ -31,15 +31,18 @@ for name, v in report.items():
     if not isinstance(v, dict) or name == "режимы":  # режимы — отдельная таблица в README/REPORT
         continue
     if name.startswith("quality_prob"):
-        rows.append([name, "", "", f"{v['auc']:.3f} {ci(v, 'auc')}", "", "", "",
+        rows.append([name, "", "", f"{v['auc']:.3f} {ci(v, 'auc')}", "", "", "", "",
+                     f"{v['pr_auc']:.3f}" if "pr_auc" in v else "",
                      f"средняя вероятность {v['mean_prob']:.2f} при доле брака {v['rate']:.2f}"])
     else:
         rows.append([name, v.get("n", ""), v.get("positives", ""),
                      f"{v['auc']:.3f} {ci(v, 'auc')}", f"{v['f1']:.3f} {ci(v, 'f1')}",
-                     f"{v['sens']:.2f}", f"{v['spec']:.2f}", ""])
-rows.append(["macro-F1 по типам нарушений", "", "", "", f"{report['macro-F1 по типам нарушений']:.3f}", "", "", ""])
+                     f"{v['sens']:.2f}", f"{v['spec']:.2f}", f"{v['bacc']:.2f}",
+                     f"{v['pr_auc']:.3f} {ci(v, 'pr_auc')}" if "pr_auc" in v else "", ""])
+rows.append(["macro-F1 по типам нарушений", "", "", "", f"{report['macro-F1 по типам нарушений']:.3f}", "", "", "", "", ""])
 
-header = ["критерий", "n", "нарушений", "AUC [95% ДИ]", "F1 [95% ДИ]", "чувств.", "специф.", "примечание"]
+header = ["критерий", "n", "нарушений", "AUC [95% ДИ]", "F1 [95% ДИ]", "чувств.", "специф.", "сбал. точность", "PR-AUC [95% ДИ]",
+          "примечание"]
 
 with open(root / "out" / "metrics_table.csv", "w", newline="", encoding="utf-8-sig") as f:
     w = csv.writer(f, delimiter=";")

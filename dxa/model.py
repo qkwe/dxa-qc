@@ -299,7 +299,10 @@ class QualityModel:
                                       f"(норма ~{np.expm1(self.area_norm):.0f}), "
                                       + (f"малый вертел выступает на {feat['rot_lt_true_bump_mm']:.1f} мм, "
                                          if np.isfinite(feat.get("rot_lt_true_bump_mm", np.nan)) else "")
-                                      + f"офсет головки {_v(raw_off, '.0f', ' мм')}; "
+                                      + f"офсет головки {_v(raw_off, '.0f', ' мм')}, "
+                                      # метод. рекомендации ЦДиТ, 2.7: ось бедра — вдоль линии сканирования; в решение не
+                                      # входит (честная CV: AUC укладки 0.86 → 0.90, но итоговый F1 0.769 → 0.745), справочно
+                                      + f"наклон бедра к линии сканирования {_v(abs(feat.get('rot_shaft_deg', np.nan)), '.1f', '°')}; "
                                       + ("ротация оценена по типичным значениям (контур не измерен); "
                                          if not (np.isfinite(_nan([raw_area], np.nan)[0]) and np.isfinite(_nan([raw_off], np.nan)[0])) else "")
                                       + f"оценка ротации {s:.2f} (порог {fthr:.2f}{mode_note})"

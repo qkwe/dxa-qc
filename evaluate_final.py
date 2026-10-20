@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, average_precision_score
 from sklearn.model_selection import StratifiedGroupKFold
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -74,7 +74,7 @@ def boot(y, pred, score, g, n=1000):
     rng = np.random.default_rng(0)
     u = np.unique(g)
     ix = {s: np.nonzero(g == s)[0] for s in u}
-    vals = {"auc": [], "f1": [], "sens": [], "spec": [], "bacc": []}
+    vals = {"auc": [], "pr_auc": [], "f1": [], "sens": [], "spec": [], "bacc": []}
     for _ in range(n):
         i = np.concatenate([ix[s] for s in rng.choice(u, len(u))])
         if 0 < y[i].sum() < len(i):
@@ -87,8 +87,9 @@ def metrics(y, pred, score):
     tp, fn = int(((pred == 1) & (y == 1)).sum()), int(((pred == 0) & (y == 1)).sum())
     tn, fp = int(((pred == 0) & (y == 0)).sum()), int(((pred == 1) & (y == 0)).sum())
     sens, spec = tp / max(tp + fn, 1), tn / max(tn + fp, 1)
-    return dict(auc=float(roc_auc_score(y, score)), f1=float(f1_score(y, pred, zero_division=0)),
-                sens=sens, spec=spec, bacc=(sens + spec) / 2)
+    # PR-AUC (средняя точность) — ТЗ 8.4: «ROC AUC и/или PR AUC»; при редких нарушениях честнее ROC-AUC
+    return dict(auc=float(roc_auc_score(y, score)), pr_auc=float(average_precision_score(y, score)),
+                f1=float(f1_score(y, pred, zero_division=0)), sens=sens, spec=spec, bacc=(sens + spec) / 2)
 
 
 def rank01(v):
@@ -134,23 +135,26 @@ report["все снимки: качество (есть нарушение)"] = 
 for name, mask in (("позвоночник", np.array([r == "spine" for r in regions])),
                    ("бедро", np.array([r == "femur" for r in regions])), ("все снимки", np.ones(len(regions), bool))):
     auc = float(roc_auc_score(y_any[mask], qprob[mask]))
-    lo, hi = boot(y_any[mask], (qprob[mask] >= 0.5).astype(int), qprob[mask], groups[mask])["auc"]
+    b = boot(y_any[mask], (qprob[mask] >= 0.5).astype(int), qprob[mask], groups[mask])
+    lo, hi = b["auc"]
     report[f"quality_prob ROC-AUC: {name}"] = {"auc": auc, "ci": [lo, hi], "mean_prob": float(qprob[mask].mean()),
-                                              "rate": float(y_any[mask].mean())}
+                                              "rate": float(y_any[mask].mean()),
+                                              "pr_auc": float(average_precision_score(y_any[mask], qprob[mask])),
+                                              "pr_ci": b["pr_auc"]}
 report["macro-F1 по типам нарушений"] = float(np.mean([v["f1"] for k, v in report.items()
                                                       if isinstance(v, dict) and "качество" not in k and not k.startswith("quality_prob")]))
 
-print(f"{'критерий':62s} {'n':>4s} {'поз':>4s}  AUC [95% ДИ]         F1 [95% ДИ]         чувств  специф  сбал.т")
+print(f"{'критерий':62s} {'n':>4s} {'поз':>4s}  AUC [95% ДИ]         F1 [95% ДИ]         чувств  специф  сбал.т  PR-AUC")
 for k, v in report.items():
     if not isinstance(v, dict):
         print(f"{k}: {v:.3f}")
         continue
     if k.startswith("quality_prob"):
-        print(f"{k:62s} AUC {v['auc']:.3f} [{v['ci'][0]:.2f}; {v['ci'][1]:.2f}]  средняя вероятность {v['mean_prob']:.2f} при доле брака {v['rate']:.2f}")
+        print(f"{k:62s} AUC {v['auc']:.3f} [{v['ci'][0]:.2f}; {v['ci'][1]:.2f}]  PR-AUC {v['pr_auc']:.3f}  средняя вероятность {v['mean_prob']:.2f} при доле брака {v['rate']:.2f}")
         continue
     c = v["ci"]
     print(f"{k:62s} {v['n']:4d} {v['positives']:4d}  {v['auc']:.3f} [{c['auc'][0]:.2f}; {c['auc'][1]:.2f}]  "
-          f"{v['f1']:.3f} [{c['f1'][0]:.2f}; {c['f1'][1]:.2f}]  {v['sens']:.2f}    {v['spec']:.2f}    {v['bacc']:.2f}")
+          f"{v['f1']:.3f} [{c['f1'][0]:.2f}; {c['f1'][1]:.2f}]  {v['sens']:.2f}    {v['spec']:.2f}    {v['bacc']:.2f}    {v['pr_auc']:.2f}")
 # --- режимы: чувствительность / специфичность обучаемых критериев и итога «есть нарушение»
 modes = {}
 print("\nрежимы (обучаемые пороги: посторонние предметы, ротация бедра)")

@@ -69,15 +69,16 @@ fetch("api/metrics").then((r) => r.json()).then((m) => {
     const total = crit.startsWith("качество");
     rows += `<tr class="${total ? "total" : ""}"><td>${NAMES[region] || region}</td><td>${total ? "Есть нарушение (итог)" : crit}</td>` +
       `<td class="num">${v.n}</td><td class="num">${v.positives}</td><td class="num">${f3(v.auc)}${ci(v.ci.auc)}</td>` +
-      `<td class="num">${f3(v.f1)}${ci(v.ci.f1)}</td><td class="num">${f2(v.sens)}</td><td class="num">${f2(v.spec)}</td></tr>`;
+      `<td class="num">${f3(v.f1)}${ci(v.ci.f1)}</td><td class="num">${f2(v.sens)}</td><td class="num">${f2(v.spec)}</td>` +
+      `<td class="num">${f2(v.bacc)}</td><td class="num">${f3(v.pr_auc)}</td></tr>`;
   }
   const q = rep["quality_prob ROC-AUC: все снимки"];
   if (q) rows += `<tr class="total"><td>Все снимки</td><td>quality_prob (вероятность нарушения)</td><td></td><td></td>` +
-    `<td class="num">${f3(q.auc)}${ci(q.ci)}</td><td></td><td></td><td></td></tr>`;
+    `<td class="num">${f3(q.auc)}${ci(q.ci)}</td><td></td><td></td><td></td><td></td><td class="num">${f3(q.pr_auc)}</td></tr>`;
   if (rep["macro-F1 по типам нарушений"] != null) rows += `<tr class="total"><td></td><td>macro-F1 по типам нарушений</td><td></td><td></td><td></td>` +
-    `<td class="num">${f3(rep["macro-F1 по типам нарушений"])}</td><td></td><td></td></tr>`;
+    `<td class="num">${f3(rep["macro-F1 по типам нарушений"])}</td><td></td><td></td><td></td><td></td></tr>`;
   $("crit").innerHTML = rows ? `<table><tr><th>Область</th><th>Критерий</th><th>Снимков</th><th>Нарушений</th>` +
-    `<th>ROC-AUC [95% ДИ]</th><th>F1 [95% ДИ]</th><th>Чувств.</th><th>Специф.</th></tr>${rows}</table>` : "метрики не найдены";
+    `<th>ROC-AUC [95% ДИ]</th><th>F1 [95% ДИ]</th><th>Чувств.</th><th>Специф.</th><th>Сбал. точность</th><th>PR-AUC</th></tr>${rows}</table>` : "метрики не найдены";
 
   const modes = rep["режимы"];
   const TITLES = {sensitive: "высокая чувствительность", balanced: "баланс (по умолчанию)", specific: "высокая специфичность"};
