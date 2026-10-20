@@ -45,8 +45,9 @@ for key, e in marks.items():
     uid = key.split(":", 1)[1]
     im = ims.get(uid)
     label = im.labels.get(LABEL_POSITIONING) if im is not None else None
-    state = "faint" if e.get("faint") else e["state"]
-    rows.append(dict(key=key, state=state, err=e.get("error_mm"), label=label, pred=pred.get(uid)))
+    state = "faint" if e.get("faint") else e.get("state")
+    rows.append(dict(key=key, state=state, err=e.get("error_mm"), label=label, pred=pred.get(uid),
+                     rotation=e.get("rotation"), area=None))
 print(f"отметок {len(rows)}, из них снимков набора организатора {sum(r['label'] is not None for r in rows)}")
 
 err = np.array([r["err"] for r in rows if r["err"] is not None], float)
@@ -77,6 +78,32 @@ if nv:
         names[s]: dict(бёдер=len(v), доля_нарушений=round(float(np.mean(v)), 3) if v else None)
         for s, v in ((s, [r["label"] for r in nv if r["state"] == s]) for s in names)}
     print("3.", report["видимость вертела и разметка нарушений"])
+
+# 4. тип ротации (рис. 5 ТЗ): согласие с разметкой нарушений и с догадкой сервиса (площадь выступа ниже / выше нормы)
+rot = [r for r in rows if r["rotation"] in ("none", "over", "under")]
+if rot:
+    from dxa import features
+    model = None
+    try:
+        import joblib
+        model = joblib.load("models/quality_model.joblib")["quality"]
+    except Exception:
+        pass
+    for r in rot:
+        im = ims.get(r["key"].split(":", 1)[1])
+        if im is not None:
+            r["area"] = features.geometry(im.array, im.spacing, im.region, im.side).get("rot_lt_area_mm2")
+    lab = [r for r in rot if r["label"] is not None]
+    agree = [(r["rotation"] != "none") == bool(r["label"]) for r in lab]
+    out = {"отмечено": len(rot), "совпадает с разметкой нарушений": round(float(np.mean(agree)), 3) if agree else None}
+    if model is not None:
+        norm = float(np.expm1(model.area_norm))
+        typed = [r for r in rot if r["rotation"] in ("over", "under") and r["area"] is not None and np.isfinite(r["area"])]
+        guess = ["over" if r["area"] < norm else "under" for r in typed]
+        out["догадка сервиса о типе верна"] = round(float(np.mean([g == r["rotation"] for g, r in zip(guess, typed)])), 3) if typed else None
+        out["норма площади, мм²"] = round(norm, 1)
+    report["тип ротации"] = out
+    print("4. тип ротации:", out)
 
 Path("out").mkdir(exist_ok=True)
 Path("out/lt_validation.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")

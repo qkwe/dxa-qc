@@ -69,6 +69,12 @@
           <button id="ltclear">Сбросить отметку</button>
           <button id="ltnext" title="Клавиша Enter">▶ Следующее бедро без отметки</button>
           <span id="ltmsg"></span>
+          <div style="margin-top:6px">Ротация на снимке (рис. 5 ТЗ):
+            <label><input type="radio" name="ltrot" value="none"> нет — контур слегка деформирован</label>
+            <label><input type="radio" name="ltrot" value="over"> переротация — контур гладкий</label>
+            <label><input type="radio" name="ltrot" value="under"> недоротация — вертел крупный</label>
+            <label><input type="radio" name="ltrot" value="unknown"> не знаю</label>
+            <span id="ltrotmsg" class="muted"></span></div>
           <div class="muted" style="margin-top:4px">Малый вертел — бугорок на <b>внутренней</b> стороне бедра (со стороны таза);
             как он выглядит на снимке DXA — ТЗ, рис. 5 («контур слегка деформирован малым вертелом»). Щелчок по вершине бугорка —
             отметка сохраняется сразу. Бугорок едва заметен — «Виден слабо» и щелчок по нему; контур гладкий, бугорка
@@ -192,7 +198,7 @@ function drawMark() {
     ctx.beginPath(); ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s); ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s); ctx.stroke();
     ctx.fillText(m.faint ? "отмечено (слабо)" : "отмечено", x + s + 4, y + s + 14);
   }
-  if (m && sp) {  // точка сервиса — только после отметки, чтобы не подсказывать
+  if (m && m.state && sp) {  // точка сервиса — только после отметки, чтобы не подсказывать
     const [x, y] = [sp[0] * cv.width, sp[1] * cv.height];
     ctx.strokeStyle = ctx.fillStyle = "#ffd600";
     ctx.beginPath(); ctx.arc(x, y, s, 0, 2 * Math.PI); ctx.stroke();
@@ -200,7 +206,7 @@ function drawMark() {
   }
 }
 function markText(m) {
-  if (!m) return "";
+  if (!m || !m.state) return "";
   if (m.state === "not_visible") return "✔ отмечено: не виден";
   return (m.faint ? "✔ отмечено: виден слабо" : "✔ отмечено") + (m.error_mm != null ? ` · до точки сервиса ${m.error_mm} мм` : " · у сервиса точки нет");
 }
@@ -212,7 +218,8 @@ async function saveMark(body) {
       body: JSON.stringify({job: jobId, row: rowIdx, ...body})});
     const j = await resp.json();
     if (!resp.ok) throw new Error(j.detail || resp.status);
-    if (body.state === "clear") delete marks[markKey(r)]; else marks[markKey(r)] = j.entry;
+    if (body.state === "clear") { const m = marks[markKey(r)]; if (m && m.rotation) marks[markKey(r)] = {...m, state: null, point: null}; else delete marks[markKey(r)]; }
+    else marks[markKey(r)] = j.entry;
     $("ltmsg").textContent = body.state === "clear" ? "отметка сброшена" : markText(j.entry);
     showSummary(j.summary);
   } catch (e) { $("ltmsg").textContent = "ОШИБКА: " + e.message; }
@@ -230,19 +237,32 @@ $("ltclear").onclick = () => saveMark({state: "clear"});
 function nextUnmarked() {
   for (let d = 1; d <= rows.length; d++) {
     const k = (rowIdx + d) % rows.length, r = rows[k];
-    if (isFemur(r) && !r.duplicate_of && !marks[markKey(r)]) { rowIdx = k; showRow(); return; }
+    if (isFemur(r) && !r.duplicate_of && !(marks[markKey(r)] && marks[markKey(r)].state && marks[markKey(r)].rotation)) { rowIdx = k; showRow(); return; }
   }
   $("ltmsg").textContent = "все бёдра в этом задании отмечены";
 }
 $("ltnext").onclick = nextUnmarked;
+document.querySelectorAll('input[name="ltrot"]').forEach((el) => el.onchange = async () => {
+  const r = rows[rowIdx];
+  $("ltrotmsg").textContent = "сохранение...";
+  try {
+    const resp = await fetch("api/landmarks", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job: jobId, row: rowIdx, rotation: el.value})});
+    const j = await resp.json();
+    if (!resp.ok) throw new Error(j.detail || resp.status);
+    marks[markKey(r)] = j.entry; $("ltrotmsg").textContent = "✔ сохранено"; showSummary(j.summary);
+  } catch (e) { $("ltrotmsg").textContent = "ОШИБКА: " + e.message; }
+});
 document.addEventListener("keydown", (e) => {
   if (LT_MODE && e.key === "Enter" && isFemur(rows[rowIdx]) && !["TEXTAREA", "INPUT", "BUTTON"].includes(document.activeElement.tagName)) nextUnmarked();
 });
 function showSummary(s) {
   if (!s || !s.total) { $("ltsum").textContent = "Пока нет отметок. Откройте снимок бедра и нажмите «Отметить малый вертел»."; return; }
+  const rr = s.rotation || {};
+  const rtxt = (rr.none || rr.over || rr.under || rr.unknown) ? ` Тип ротации отмечен: нет ${rr.none || 0}, переротация ${rr.over || 0}, недоротация ${rr.under || 0}, не знаю ${rr.unknown || 0}.` : "";
   $("ltsum").innerHTML = `Отмечено бёдер: <b>${s.total}</b> (точкой ${s.points}, из них «виден слабо» ${s.faint || 0}; «не виден» ${s.not_visible}).` +
     (s.compared ? ` Ошибка нахождения малого вертела сервисом: медиана <b>${s.median_mm} мм</b>, в пределах 5 мм — ` +
-      `${Math.round(100 * s.within_5mm)}%, в пределах 10 мм — ${Math.round(100 * s.within_10mm)}% (сравнено ${s.compared}).` : "");
+      `${Math.round(100 * s.within_5mm)}%, в пределах 10 мм — ${Math.round(100 * s.within_10mm)}% (сравнено ${s.compared}).` : "") + rtxt;
 }
 fetch("api/landmarks").then((r) => r.json()).then((j) => { marks = j.items || {}; showSummary(j.summary); drawBoxes(); }).catch(() => {});
 function pos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; }
@@ -285,8 +305,11 @@ function showRow() {
   boxes = []; auto = []; drawing = false; $("autobox").style.display = "none"; $("auto").checked = true; $("drawbtn").classList.remove("on"); $("stage").classList.add("nodraw");
   setPick(false);
   $("ltbox").style.display = LT_MODE && isFemur(r) ? "" : "none";
+  { const rot = isFemur(r) && marks[markKey(r)] ? marks[markKey(r)].rotation : null;
+    document.querySelectorAll('input[name="ltrot"]').forEach((el) => { el.checked = el.value === rot; });
+    $("ltrotmsg").textContent = ""; }
   ltLink(rowIdx);
-  $("ltmsg").textContent = isFemur(r) ? (marks[markKey(r)] ? markText(marks[markKey(r)]) : (r.duplicate_of ? "копия снимка — отмечайте оригинал («Следующее бедро без отметки» копии пропускает)" : "не отмечено")) : "";
+  $("ltmsg").textContent = isFemur(r) ? (marks[markKey(r)] && marks[markKey(r)].state ? markText(marks[markKey(r)]) : (r.duplicate_of ? "копия снимка — отмечайте оригинал («Следующее бедро без отметки» копии пропускает)" : "не отмечено")) : "";
   $("prev").disabled = rowIdx <= 0; $("next").disabled = rowIdx >= rows.length - 1;
   $("where").textContent = rows.length ? `снимок ${rowIdx + 1} из ${rows.length}` : "";
   $("savemsg").textContent = ""; $("note").value = "";
@@ -332,7 +355,7 @@ function prefetch() {
   const ks = [rowIdx + 1];
   for (let d = 1; d <= rows.length; d++) {
     const k = (rowIdx + d) % rows.length, r = rows[k];
-    if (isFemur(r) && !r.duplicate_of && !marks[markKey(r)]) { ks.push(k); break; }
+    if (isFemur(r) && !r.duplicate_of && !(marks[markKey(r)] && marks[markKey(r)].state && marks[markKey(r)].rotation)) { ks.push(k); break; }
   }
   for (const k of ks) {
     const r = rows[k];

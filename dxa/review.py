@@ -158,6 +158,13 @@ def set_landmark(body: dict):
     _, _, row = _job_row(body)
     if row.get("anatomical_region") != "Проксимальный отдел бедра" or row.get("processing_status") != "Success":
         raise HTTPException(422, "малый вертел отмечается на обработанном снимке бедра")
+    if "rotation" in body and "state" not in body:   # тип ротации — отдельно от отметки вертела
+        try:
+            e = landmarks.set_rotation(row["study_uid"], row["image_uid"], body.get("rotation") or None,
+                                       path=row.get("path_to_study", ""))
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        return {"entry": e, "summary": landmarks.summary()}
     state = body.get("state")
     if state == "clear":
         landmarks.delete(row["study_uid"], row["image_uid"])

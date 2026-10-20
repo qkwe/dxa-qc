@@ -21,6 +21,8 @@ import numpy as np
 from .feedback import FEEDBACK
 
 STATES = ("point", "not_visible")
+# ротация на снимке по рис. 5 ТЗ (визуально): нет / переротация (контур гладкий) / недоротация (вертел крупный)
+ROTATIONS = ("none", "over", "under", "unknown")
 _lock = threading.Lock()
 
 
@@ -60,17 +62,47 @@ def save(study_uid: str, image_uid: str, state: str, point=None, service=None, f
     entry["error_mm"] = error_mm(entry)
     with _lock:
         data = load(root)
+        old = data.get(f"{study_uid}:{image_uid}") or {}
+        if old.get("rotation"):
+            entry["rotation"] = old["rotation"]        # тип ротации отмечается отдельно — не теряем его
         data[f"{study_uid}:{image_uid}"] = entry
         Path(root).mkdir(parents=True, exist_ok=True)
         _file(root).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     return entry
 
 
+def set_rotation(study_uid: str, image_uid: str, rotation: str | None, path: str = "", root: Path = FEEDBACK) -> dict:
+    """Тип ротации на снимке (по рис. 5 ТЗ) — отдельно от отметки вертела; None — снять."""
+    if rotation is not None and rotation not in ROTATIONS:
+        raise ValueError(f"тип ротации — один из {ROTATIONS}")
+    if not study_uid or not image_uid:
+        raise ValueError("у снимка нет идентификаторов исследования и изображения")
+    with _lock:
+        data = load(root)
+        e = data.setdefault(f"{study_uid}:{image_uid}", dict(state=None, point=None, service=None, frame_mm=None,
+                                                             path=str(path), error_mm=None,
+                                                             created=time.strftime("%Y-%m-%d %H:%M:%S")))
+        if rotation is None:
+            e.pop("rotation", None)
+            if e.get("state") is None:
+                data.pop(f"{study_uid}:{image_uid}")
+        else:
+            e["rotation"] = rotation
+        Path(root).mkdir(parents=True, exist_ok=True)
+        _file(root).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    return data.get(f"{study_uid}:{image_uid}", {})
+
+
 def delete(study_uid: str, image_uid: str, root: Path = FEEDBACK) -> bool:
     with _lock:
         data = load(root)
-        if data.pop(f"{study_uid}:{image_uid}", None) is None:
+        e = data.get(f"{study_uid}:{image_uid}")
+        if e is None or e.get("state") is None:
             return False
+        if e.get("rotation"):   # сбрасывается только отметка вертела, тип ротации остаётся
+            data[f"{study_uid}:{image_uid}"] = dict(e, state=None, point=None, faint=False, error_mm=None)
+        else:
+            data.pop(f"{study_uid}:{image_uid}")
         _file(root).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     return True
 
@@ -87,9 +119,11 @@ def summary(root: Path = FEEDBACK) -> dict:
     """Сводка: сколько отмечено, медианная ошибка, доля в пределах 5 и 10 мм."""
     data = load(root)
     err = np.array([e["error_mm"] for e in data.values() if e.get("error_mm") is not None], float)
-    out = dict(total=len(data), points=sum(e["state"] == "point" for e in data.values()),
+    marked = [e for e in data.values() if e.get("state") in STATES]
+    out = dict(total=len(marked), points=sum(e["state"] == "point" for e in data.values()),
                not_visible=sum(e["state"] == "not_visible" for e in data.values()),
-               faint=sum(bool(e.get("faint")) for e in data.values()), compared=int(len(err)))
+               faint=sum(bool(e.get("faint")) for e in data.values()), compared=int(len(err)),
+               rotation={r: sum(e.get("rotation") == r for e in data.values()) for r in ROTATIONS})
     if len(err):
         out.update(median_mm=round(float(np.median(err)), 1), within_5mm=round(float((err <= 5).mean()), 3),
                    within_10mm=round(float((err <= 10).mean()), 3))

@@ -386,3 +386,19 @@ def test_feedback_rotation_type_and_merge_by_image_uid(tmp_path):
     merged = feedback.merge(base, imgs)
     assert len(merged) == 1                                       # не две копии снимка, а одна — с меткой врача
     assert merged[0].labels[LABEL_POSITIONING] == 1 and merged[0].study_uid == "КАТАЛОГ-1"
+
+
+def test_lt_rotation_type_separate_from_mark(tmp_path):
+    """Тип ротации хранится отдельно от отметки вертела: сброс отметки его не теряет, повторная отметка — тоже."""
+    from dxa import landmarks
+
+    landmarks.set_rotation("s", "i", "over", root=tmp_path)
+    assert landmarks.summary(tmp_path)["total"] == 0 and landmarks.summary(tmp_path)["rotation"]["over"] == 1
+    landmarks.save("s", "i", "point", [0.5, 0.5], root=tmp_path)
+    assert landmarks.load(tmp_path)["s:i"]["rotation"] == "over"           # отметка не стёрла тип
+    assert landmarks.delete("s", "i", tmp_path)
+    assert landmarks.load(tmp_path)["s:i"]["rotation"] == "over" and landmarks.summary(tmp_path)["total"] == 0
+    with pytest.raises(ValueError):
+        landmarks.set_rotation("s", "i", "sideways", root=tmp_path)
+    landmarks.set_rotation("s", "i", None, root=tmp_path)
+    assert "s:i" not in landmarks.load(tmp_path)
