@@ -308,6 +308,23 @@ function showRow() {
   $("save").disabled = false;
   // та же картинка (копия снимка) событие load не вызовет — рамки сервиса пересчитываются сразу
   if ($("img").complete && $("img").naturalWidth) sizeCanvas(); else drawBoxes();
+  prefetch();
+}
+// следующий снимок (и следующее неотмеченное бедро) грузится заранее — переход без ожидания
+const _pre = [];
+function prefetch() {
+  const ks = [rowIdx + 1];
+  for (let d = 1; d <= rows.length; d++) {
+    const k = (rowIdx + d) % rows.length, r = rows[k];
+    if (isFemur(r) && !r.duplicate_of && !marks[markKey(r)]) { ks.push(k); break; }
+  }
+  for (const k of ks) {
+    const r = rows[k];
+    if (!r || r.processing_status !== "Success" || !r.overlay) continue;
+    const im = new Image();
+    im.src = $("plain").checked ? `api/jobs/${jobId}/plain/${k}.png` : `api/jobs/${jobId}/overlay/${encodeURI(r.overlay)}`;
+    _pre.push(im); if (_pre.length > 6) _pre.shift();
+  }
 }
 $("prev").onclick = () => { rowIdx--; showRow(); };
 $("next").onclick = () => { rowIdx++; showRow(); };
