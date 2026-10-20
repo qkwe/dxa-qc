@@ -8,6 +8,7 @@ __pycache__/
 out/*
 !out/metrics_final.json
 !out/validation.json
+!out/lt_validation.json
 !out/metrics_table.md
 !out/metrics_table.csv
 !out/foreign_stand.json
