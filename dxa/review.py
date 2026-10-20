@@ -138,7 +138,8 @@ def _job_row(body: dict) -> tuple[dict, int, dict]:
 
 @router.post("/api/landmarks")
 def set_landmark(body: dict):
-    """Отметка малого вертела: {job, row, state: point | not_visible | clear, point: [x, y] в долях кадра}.
+    """Отметка малого вертела: {job, row, state: point | not_visible | clear, point: [x, y] в долях кадра,
+    faint: виден слабо}.
     Точка сервиса и размер кадра берутся из строки задания — сравнение честное, клиент их не задаёт."""
     _, _, row = _job_row(body)
     if row.get("anatomical_region") != "Проксимальный отдел бедра" or row.get("processing_status") != "Success":
@@ -153,7 +154,7 @@ def set_landmark(body: dict):
         service, frame = [fx, fy], [w_mm, h_mm]
     try:
         e = landmarks.save(row["study_uid"], row["image_uid"], state, body.get("point"), service, frame,
-                           path=row.get("path_to_study", ""))
+                           path=row.get("path_to_study", ""), faint=bool(body.get("faint")))
     except (ValueError, TypeError) as err:
         raise HTTPException(422, str(err))
     return {"entry": e, "summary": landmarks.summary()}

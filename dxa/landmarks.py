@@ -1,7 +1,8 @@
 """Отметки малого вертела: где он на самом деле — для проверки, правильно ли сервис его находит.
 
 Это анатомия, а не диагноз: метки нарушений (организатора и врача) не меняются, обучение их не использует.
-Отметка — точка в долях кадра (x, y ∈ [0; 1], кадр = картинка разметки) или «не виден» (контур гладкий).
+Отметка — точка в долях кадра (x, y ∈ [0; 1], кадр = картинка разметки), с пометкой «виден слабо» или без,
+либо «не виден» (контур гладкий). Слабо видный вертел — промежуточная степень ротации.
 Вместе с ней сохраняется точка наибольшего выступа, найденная сервисом, и размер кадра в мм —
 расстояние между ними и есть ошибка нахождения малого вертела (validate_lt.py, страница /review).
 
@@ -35,7 +36,7 @@ def load(root: Path = FEEDBACK) -> dict:
 
 
 def save(study_uid: str, image_uid: str, state: str, point=None, service=None, frame_mm=None, path: str = "",
-         root: Path = FEEDBACK) -> dict:
+         root: Path = FEEDBACK, faint: bool = False) -> dict:
     """point, service — [x, y] в долях кадра; frame_mm — [ширина, высота] кадра в мм."""
     if state not in STATES:
         raise ValueError(f"состояние — одно из {STATES}")
@@ -50,7 +51,8 @@ def save(study_uid: str, image_uid: str, state: str, point=None, service=None, f
             raise ValueError("точка вне кадра")
         return [round(x, 5), round(y, 5)]
 
-    entry = dict(state=state, point=frac(point) if state == "point" else None, service=frac(service),
+    entry = dict(state=state, point=frac(point) if state == "point" else None, faint=bool(faint) and state == "point",
+                 service=frac(service),
                  frame_mm=[float(v) for v in frame_mm] if frame_mm else None, path=str(path),
                  created=time.strftime("%Y-%m-%d %H:%M:%S"))
     if state == "point" and entry["point"] is None:
@@ -86,7 +88,8 @@ def summary(root: Path = FEEDBACK) -> dict:
     data = load(root)
     err = np.array([e["error_mm"] for e in data.values() if e.get("error_mm") is not None], float)
     out = dict(total=len(data), points=sum(e["state"] == "point" for e in data.values()),
-               not_visible=sum(e["state"] == "not_visible" for e in data.values()), compared=int(len(err)))
+               not_visible=sum(e["state"] == "not_visible" for e in data.values()),
+               faint=sum(bool(e.get("faint")) for e in data.values()), compared=int(len(err)))
     if len(err):
         out.update(median_mm=round(float(np.median(err)), 1), within_5mm=round(float((err <= 5).mean()), 3),
                    within_10mm=round(float((err <= 10).mean()), 3))

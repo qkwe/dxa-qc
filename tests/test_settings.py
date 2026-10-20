@@ -353,9 +353,11 @@ def test_lt_landmarks_store_and_error(tmp_path):
 
     e = landmarks.save("s", "i1", "point", [0.50, 0.50], [0.53, 0.54], [100.0, 150.0], root=tmp_path)
     assert e["error_mm"] == pytest.approx(np.hypot(3.0, 6.0), abs=0.1)
-    landmarks.save("s", "i2", "not_visible", root=tmp_path)
+    landmarks.save("s", "i2", "not_visible", root=tmp_path, faint=True)      # «слабо» без точки не бывает
+    landmarks.save("s", "i4", "point", [0.2, 0.2], root=tmp_path, faint=True)
     s = landmarks.summary(tmp_path)
-    assert s["total"] == 2 and s["not_visible"] == 1 and s["compared"] == 1 and s["within_10mm"] == 1.0
+    assert s["total"] == 3 and s["not_visible"] == 1 and s["faint"] == 1 and s["compared"] == 1 and s["within_10mm"] == 1.0
+    landmarks.delete("s", "i4", tmp_path)
     for bad in (dict(state="x"), dict(state="point", point=None), dict(state="point", point=[1.5, 0.2])):
         with pytest.raises(ValueError):
             landmarks.save("s", "i3", root=tmp_path, **bad)

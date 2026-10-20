@@ -62,13 +62,15 @@
           в разметку); повторный щелчок возвращает. Пропущенный предмет — «Обвести предмет».</div>
         <div id="ltbox" style="display:none; margin-top:6px">
           <button id="ltbtn" title="Затем щёлкните по вершине малого вертела на снимке">✛ Отметить малый вертел</button>
+          <button id="ltfaint" title="Бугорок есть, но едва заметен; затем щёлкните по его вершине">✛ Виден слабо</button>
           <button id="ltnone" title="Контур гладкий, бугорка малого вертела не видно">Не виден</button>
           <button id="ltclear">Сбросить отметку</button>
           <button id="ltnext" title="Клавиша Enter">▶ Следующее бедро без отметки</button>
           <span id="ltmsg"></span>
           <div class="muted" style="margin-top:4px">Малый вертел — небольшой бугорок на <b>внутренней</b> стороне бедра (со стороны таза),
             чуть ниже перехода шейки в ствол кости; обычно на 2–3 радиуса головки ниже её центра. Щелчок по вершине бугорка —
-            отметка сохраняется сразу. Контур гладкий, бугорка нет — «Не виден»; сомневаетесь — пропустите снимок.
+            отметка сохраняется сразу. Бугорок едва заметен — «Виден слабо» и щелчок по нему; контур гладкий, бугорка
+            нет — «Не виден»; сомневаетесь, есть ли он вообще, — пропустите снимок.
             Точка сервиса показывается только после вашей отметки. Метки нарушений и обучение отметки не меняют.</div>
         </div>
       </fieldset>
@@ -120,7 +122,7 @@ const q = new URLSearchParams(location.search);
 const jobId = q.get("job");
 let rowIdx = Number(q.get("row") || 0), rows = [], boxes = [], drawing = false, start = null;
 let auto = [];  // рамки сервиса: {b: [x0, y0, x1, y1] в пикселях картинки, where, off: отклонена врачом}
-let marks = {}, ltPick = false;  // отметки малого вертела по "<study_uid>:<image_uid>"; режим отметки
+let marks = {}, ltPick = false, ltFaint = false;  // отметки малого вертела по "<study_uid>:<image_uid>"; режим отметки
 if (jobId) $("back").href = "./?job=" + encodeURIComponent(jobId);
 
 // ---------------- снимок и рамки
@@ -173,7 +175,7 @@ function drawMark() {
     const [x, y] = [m.point[0] * cv.width, m.point[1] * cv.height];
     ctx.strokeStyle = ctx.fillStyle = "#00e676";
     ctx.beginPath(); ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s); ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s); ctx.stroke();
-    ctx.fillText("отмечено", x + s + 4, y + s + 14);
+    ctx.fillText(m.faint ? "отмечено (слабо)" : "отмечено", x + s + 4, y + s + 14);
   }
   if (m && sp) {  // точка сервиса — только после отметки, чтобы не подсказывать
     const [x, y] = [sp[0] * cv.width, sp[1] * cv.height];
@@ -185,7 +187,7 @@ function drawMark() {
 function markText(m) {
   if (!m) return "";
   if (m.state === "not_visible") return "✔ отмечено: не виден";
-  return "✔ отмечено" + (m.error_mm != null ? ` · до точки сервиса ${m.error_mm} мм` : " · у сервиса точки нет");
+  return (m.faint ? "✔ отмечено: виден слабо" : "✔ отмечено") + (m.error_mm != null ? ` · до точки сервиса ${m.error_mm} мм` : " · у сервиса точки нет");
 }
 async function saveMark(body) {
   const r = rows[rowIdx];
@@ -201,11 +203,13 @@ async function saveMark(body) {
   } catch (e) { $("ltmsg").textContent = "ОШИБКА: " + e.message; }
   setPick(false); drawBoxes();
 }
-function setPick(on) {
-  ltPick = on; $("ltbtn").classList.toggle("on", on); $("stage").classList.toggle("nodraw", !on && !drawing);
+function setPick(on, faint = false) {
+  ltPick = on; ltFaint = on && faint;
+  $("ltbtn").classList.toggle("on", on && !faint); $("ltfaint").classList.toggle("on", on && faint); $("stage").classList.toggle("nodraw", !on && !drawing);
   if (on && !$("plain").checked) { $("plain").checked = true; $("img").src = imgSrc(); }  // без легенды и линий — не подсказывать
 }
-$("ltbtn").onclick = () => { if (drawing) $("drawbtn").onclick(); setPick(!ltPick); };
+$("ltbtn").onclick = () => { if (drawing) $("drawbtn").onclick(); setPick(!(ltPick && !ltFaint)); };
+$("ltfaint").onclick = () => { if (drawing) $("drawbtn").onclick(); setPick(!(ltPick && ltFaint), true); };
 $("ltnone").onclick = () => saveMark({state: "not_visible"});
 $("ltclear").onclick = () => saveMark({state: "clear"});
 function nextUnmarked() {
@@ -221,7 +225,7 @@ document.addEventListener("keydown", (e) => {
 });
 function showSummary(s) {
   if (!s || !s.total) { $("ltsum").textContent = "Пока нет отметок. Откройте снимок бедра и нажмите «Отметить малый вертел»."; return; }
-  $("ltsum").innerHTML = `Отмечено бёдер: <b>${s.total}</b> (точкой ${s.points}, «не виден» ${s.not_visible}).` +
+  $("ltsum").innerHTML = `Отмечено бёдер: <b>${s.total}</b> (точкой ${s.points}, из них «виден слабо» ${s.faint || 0}; «не виден» ${s.not_visible}).` +
     (s.compared ? ` Ошибка нахождения малого вертела сервисом: медиана <b>${s.median_mm} мм</b>, в пределах 5 мм — ` +
       `${Math.round(100 * s.within_5mm)}%, в пределах 10 мм — ${Math.round(100 * s.within_10mm)}% (сравнено ${s.compared}).` : "");
 }
@@ -229,7 +233,7 @@ fetch("api/landmarks").then((r) => r.json()).then((j) => { marks = j.items || {}
 function pos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; }
 cv.onmousedown = (e) => {
   if (drawing) { start = pos(e); return; }
-  if (ltPick) { const [x, y] = pos(e); saveMark({state: "point", point: [x / cv.width, y / cv.height]}); return; }
+  if (ltPick) { const [x, y] = pos(e); saveMark({state: "point", point: [x / cv.width, y / cv.height], faint: ltFaint}); return; }
   if (!showAuto()) return;
   const [x, y] = pos(e);  // щелчок по рамке сервиса: «это не предмет» / вернуть
   const hit = auto.find((a) => x >= a.b[0] && x <= a.b[2] && y >= a.b[1] && y <= a.b[3]);

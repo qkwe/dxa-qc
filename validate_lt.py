@@ -45,7 +45,8 @@ for key, e in marks.items():
     uid = key.split(":", 1)[1]
     im = ims.get(uid)
     label = im.labels.get(LABEL_POSITIONING) if im is not None else None
-    rows.append(dict(key=key, state=e["state"], err=e.get("error_mm"), label=label, pred=pred.get(uid)))
+    state = "faint" if e.get("faint") else e["state"]
+    rows.append(dict(key=key, state=state, err=e.get("error_mm"), label=label, pred=pred.get(uid)))
 print(f"отметок {len(rows)}, из них снимков набора организатора {sum(r['label'] is not None for r in rows)}")
 
 err = np.array([r["err"] for r in rows if r["err"] is not None], float)
@@ -71,12 +72,11 @@ if lab:
 
 nv = [r for r in rows if r["label"] is not None]
 if nv:
-    t = {s: [r["label"] for r in nv if r["state"] == s] for s in ("not_visible", "point")}
-    report["«не виден» и разметка нарушений"] = {
-        "доля нарушений, вертел не виден": round(float(np.mean(t["not_visible"])), 3) if t["not_visible"] else None,
-        "доля нарушений, вертел виден": round(float(np.mean(t["point"])), 3) if t["point"] else None,
-        "не виден": len(t["not_visible"]), "виден": len(t["point"])}
-    print("3.", report["«не виден» и разметка нарушений"])
+    names = {"point": "виден чётко", "faint": "виден слабо", "not_visible": "не виден"}
+    report["видимость вертела и разметка нарушений"] = {
+        names[s]: dict(бёдер=len(v), доля_нарушений=round(float(np.mean(v)), 3) if v else None)
+        for s, v in ((s, [r["label"] for r in nv if r["state"] == s]) for s in names)}
+    print("3.", report["видимость вертела и разметка нарушений"])
 
 Path("out").mkdir(exist_ok=True)
 Path("out/lt_validation.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
