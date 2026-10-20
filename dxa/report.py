@@ -103,23 +103,23 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
                 zx0, zx1 = int(min(hx + 0.3 * r, a.shape[1] - 1)) * scale, a.shape[1] * scale
             d.rectangle([zx0, yz0, zx1, yz1], outline=(170, 170, 255), width=2)
             _label(d, (zx0 + 4, yz0 + 3), "седалищная кость", small, (170, 170, 255))
-            # ротация (dxa/rotation.py): анализируемый медиальный контур от шейки до диафиза (там малый вертел)
-            # и его наибольший выступ. Выступ не всегда сам вертел — иногда изгиб у шейки (так честнее подписать).
-            # Точку рисуем, только если выступ заметен: у гладкого контура «самая выступающая точка» случайна
+            # ротация (dxa/rotation.py): анализируемый медиальный контур от шейки до диафиза и малый вертел на нём
+            # (выступ ниже изгиба шейки — проверено по ручным отметкам). Точку рисуем, только если вертел
+            # заметно выступает: у гладкого контура «самая выступающая точка» случайна
             contour = feats.get("rot_lt_contour") or []
-            bump = feats.get("rot_lt_bump_mm", np.nan)
+            bump = feats.get("rot_lt_true_bump_mm", np.nan)
             if len(contour) > 1:
                 d.line([(x * scale, y * scale) for x, y in contour], fill=YELLOW, width=2)
-            lx, ly = feats.get("rot_lt_peak_x"), feats.get("rot_lt_peak_y")
+            lx, ly = feats.get("rot_lt_true_x"), feats.get("rot_lt_true_y")
             visible = np.isfinite(bump) and bump >= LT_VISIBLE_MM
             if not show_peak:
                 ax = None
             elif visible and lx is not None and ly is not None and np.isfinite(lx) and np.isfinite(ly):
                 d.ellipse([(lx - 5) * scale, (ly - 5) * scale, (lx + 5) * scale, (ly + 5) * scale],
                           outline=YELLOW, width=3)
-                ax, ay, text = lx, ly, f"наибольший выступ контура {bump:.1f} мм"
+                ax, ay, text = lx, ly, f"малый вертел: выступ {bump:.1f} мм"
             elif len(contour) > 1:
-                ax, ay = contour[len(contour) // 2]
+                ax, ay = (lx, ly) if lx is not None and ly is not None and np.isfinite(lx) and np.isfinite(ly)                     else contour[len(contour) // 2]
                 text = f"контур гладкий, малый вертел не выступает ({bump:.1f} мм)" if np.isfinite(bump) else "контур не измерен"
             else:
                 ax = None

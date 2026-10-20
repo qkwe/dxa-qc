@@ -324,9 +324,9 @@ class Service:
                                   round(b["box"][3] / h, 4), b["where"]] for b in it.result["foreign_boxes"]],
                                 ensure_ascii=False)
                         f = it.result.get("features", {})
-                        px, py = f.get("rot_lt_peak_x", np.nan), f.get("rot_lt_peak_y", np.nan)
+                        px, py = f.get("rot_lt_true_x", np.nan), f.get("rot_lt_true_y", np.nan)
                         if it.region == "femur" and np.isfinite(px) and np.isfinite(py):
-                            # наибольший выступ контура (где сервис «видит» малый вертел) в долях кадра и размер
+                            # малый вертел (как его находит сервис) в долях кадра и размер
                             # кадра в мм — для отметки малого вертела в инструменте врача (dxa/landmarks.py)
                             h, w = it.array.shape[:2]
                             sx, sy = it.result["spacing"]

@@ -38,6 +38,14 @@ def _femur_runs(mask: np.ndarray, axis_x) -> tuple[np.ndarray, np.ndarray]:
     return left, right
 
 
+# Сам малый вертел ищется ниже изгиба шейки: не выше 1.5 радиуса головки под её центром. Проверено 20.10 по 34
+# ручным отметкам вертела (как на рис. 5 ТЗ): наибольший выступ всего контура в 2/3 случаев приходится на изгиб
+# шейки (медиана 30 мм от вертела), в окне ниже 1.5 R — медиана 2 мм, в пределах 10 мм 76% (подбор на половине
+# отметок, проверка на другой). Для РЕШЕНИЯ остаётся площадь выступа всего контура (rot_lt_area_mm2): форма шейки
+# тоже меняется при повороте, и по честной CV она согласуется с разметкой врачей лучше одного вертела (F1 0.67 / 0.66).
+LT_BELOW_HEAD_R = 1.5
+
+
 def measure(array: np.ndarray, spacing: Spacing, side: str | None, mask: np.ndarray | None = None) -> dict:
     """mask — готовая маска бедренной кости (например, SAM); иначе эвристическая из roi."""
     empty = dict(rot_lt_bump_mm=np.nan, rot_lt_area_mm2=np.nan, rot_offset_mm=np.nan,
@@ -113,6 +121,13 @@ def measure(array: np.ndarray, spacing: Spacing, side: str | None, mask: np.ndar
     to_x = (lambda x: float(x)) if lm["medial"] == "right" else (lambda x: float(mask.shape[1] - 1 - x))
     peak = int(np.argmax(bump))
     peak_x = to_x(edge[peak])
+    # малый вертел — наибольший выступ ниже изгиба шейки (для разметки и заключения)
+    below = band >= hy + LT_BELOW_HEAD_R * radius * sx / sy
+    if below.sum() >= 3:
+        lt = int(np.argmax(np.where(below, bump, -np.inf)))
+        lt_x, lt_y, lt_bump = to_x(edge[lt]), float(band[lt]), float(bump[lt])
+    else:
+        lt_x = lt_y = lt_bump = np.nan
     contour = [(to_x(x), float(r)) for x, r in zip(edge[::2], band[::2])]
     # угол шейки: от центра головки к точке оси диафиза на уровне малого вертела
     neck_dx = (hx - axis_x(hy + radius * 2)) * sx
@@ -122,6 +137,9 @@ def measure(array: np.ndarray, spacing: Spacing, side: str | None, mask: np.ndar
         rot_lt_peak_x=peak_x,
         rot_lt_peak_y=float(band[peak]),
         rot_lt_contour=contour,
+        rot_lt_true_x=lt_x,
+        rot_lt_true_y=lt_y,
+        rot_lt_true_bump_mm=lt_bump,
         rot_lt_area_mm2=float(np.clip(bump, 0, None).sum() * sy * sx),
         rot_lt_chord_mm=float(over_chord.max()),
         rot_offset_mm=float(offset),
