@@ -22,7 +22,7 @@ RUN pip install --upgrade pip==25.0.1 && pip install -r requirements.txt
 
 COPY models ./models
 COPY dxa ./dxa
-COPY train.py evaluate_final.py validate_measures.py validate_foreign_object.py make_metrics_table.py verify.py ./
+COPY train.py evaluate_final.py validate_measures.py validate_foreign_object.py validate_lt.py make_metrics_table.py verify.py ./
 # честные метрики режимов чувствительности — показываются в настройках веб-интерфейса
 COPY out/metrics_final.json out/validation.json out/foreign_stand.json ./out/
 

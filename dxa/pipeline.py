@@ -323,6 +323,15 @@ class Service:
                                 [[round(b["box"][0] / w, 4), round(b["box"][1] / h, 4), round(b["box"][2] / w, 4),
                                   round(b["box"][3] / h, 4), b["where"]] for b in it.result["foreign_boxes"]],
                                 ensure_ascii=False)
+                        f = it.result.get("features", {})
+                        px, py = f.get("rot_lt_peak_x", np.nan), f.get("rot_lt_peak_y", np.nan)
+                        if it.region == "femur" and np.isfinite(px) and np.isfinite(py):
+                            # наибольший выступ контура (где сервис «видит» малый вертел) в долях кадра и размер
+                            # кадра в мм — для отметки малого вертела в инструменте врача (dxa/landmarks.py)
+                            h, w = it.array.shape[:2]
+                            sx, sy = it.result["spacing"]
+                            rows[-1]["overlay_lt_peak"] = json.dumps(
+                                [round(px / w, 5), round(py / h, 5), round(w * sx, 1), round(h * sy, 1)])
                         overlay_of[id(it)] = {k: v for k, v in rows[-1].items() if k.startswith("overlay")}
                     except Exception as e:
                         rows[-1]["error"] = (rows[-1].get("error") or "") + f" доп. серия: {e}"

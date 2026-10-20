@@ -25,7 +25,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 
-from . import feedback
+from . import feedback, landmarks
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = Path(os.environ.get("DXA_MODELS_DIR", "models"))
@@ -89,7 +89,7 @@ def plain_image(job_id: str, k: int):
 @router.post("/api/feedback")
 def add_feedback(body: dict):
     """{job, row, labels: {метка: 0/1}, boxes: [[x0,y0,x1,y1]] в пикселях картинки разметки,
-    overlay_size: [ширина, высота] этой картинки, note}."""
+    overlay_size: [ширина, высота] этой картинки, note, rotation_type: over/under/unknown — только бедро}."""
     api = _api()
     job = api.job_status_dict(str(body.get("job", "")))
     rows = job.get("rows") or []
@@ -120,10 +120,48 @@ def add_feedback(body: dict):
     try:
         entry_id = feedback.save(data, region, side, body.get("labels") or {}, boxes, body.get("note", ""),
                                  source=dict(job=job["id"], row=k, path=row["path_to_study"],
-                                             service_verdict=row.get("violation_type", "")))
+                                             service_verdict=row.get("violation_type", "")),
+                                 rotation_type=body.get("rotation_type") or None)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"id": entry_id, "total": len(feedback.entries())}
+
+
+def _job_row(body: dict) -> tuple[dict, int, dict]:
+    job = _api().job_status_dict(str(body.get("job", "")))
+    rows = job.get("rows") or []
+    k = body.get("row")
+    if not isinstance(k, int) or not 0 <= k < len(rows):
+        raise HTTPException(422, "нет такой строки задания")
+    return job, k, rows[k]
+
+
+@router.post("/api/landmarks")
+def set_landmark(body: dict):
+    """Отметка малого вертела: {job, row, state: point | not_visible | clear, point: [x, y] в долях кадра}.
+    Точка сервиса и размер кадра берутся из строки задания — сравнение честное, клиент их не задаёт."""
+    _, _, row = _job_row(body)
+    if row.get("anatomical_region") != "Проксимальный отдел бедра" or row.get("processing_status") != "Success":
+        raise HTTPException(422, "малый вертел отмечается на обработанном снимке бедра")
+    state = body.get("state")
+    if state == "clear":
+        landmarks.delete(row["study_uid"], row["image_uid"])
+        return {"summary": landmarks.summary()}
+    service, frame = None, None
+    if row.get("overlay_lt_peak"):
+        fx, fy, w_mm, h_mm = json.loads(row["overlay_lt_peak"])
+        service, frame = [fx, fy], [w_mm, h_mm]
+    try:
+        e = landmarks.save(row["study_uid"], row["image_uid"], state, body.get("point"), service, frame,
+                           path=row.get("path_to_study", ""))
+    except (ValueError, TypeError) as err:
+        raise HTTPException(422, str(err))
+    return {"entry": e, "summary": landmarks.summary()}
+
+
+@router.get("/api/landmarks")
+def list_landmarks():
+    return {"items": landmarks.load(), "summary": landmarks.summary()}
 
 
 @router.get("/api/feedback")

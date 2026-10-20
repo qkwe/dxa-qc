@@ -60,6 +60,17 @@
         <div class="muted" id="autohint" style="display:none; margin-top:4px">Пунктир — предметы, найденные сервисом: они уже
           учтены в разметке, обводить их заново не нужно. Ложную рамку — щёлкните по ней (станет серой и не попадёт
           в разметку); повторный щелчок возвращает. Пропущенный предмет — «Обвести предмет».</div>
+        <div id="ltbox" style="display:none; margin-top:6px">
+          <button id="ltbtn" title="Затем щёлкните по вершине малого вертела на снимке">✛ Отметить малый вертел</button>
+          <button id="ltnone" title="Контур гладкий, бугорка малого вертела не видно">Не виден</button>
+          <button id="ltclear">Сбросить отметку</button>
+          <button id="ltnext" title="Клавиша Enter">▶ Следующее бедро без отметки</button>
+          <span id="ltmsg"></span>
+          <div class="muted" style="margin-top:4px">Малый вертел — небольшой бугорок на <b>внутренней</b> стороне бедра (со стороны таза),
+            чуть ниже перехода шейки в ствол кости; обычно на 2–3 радиуса головки ниже её центра. Щелчок по вершине бугорка —
+            отметка сохраняется сразу. Контур гладкий, бугорка нет — «Не виден»; сомневаетесь — пропустите снимок.
+            Точка сервиса показывается только после вашей отметки. Метки нарушений и обучение отметки не меняют.</div>
+        </div>
       </fieldset>
     </div>
     <div>
@@ -76,6 +87,10 @@
     </div>
   </div>
   <div style="padding: 0 8px 8px">
+    <fieldset>
+      <legend>Отметки малого вертела (точность сервиса)</legend>
+      <div id="ltsum" class="muted">загрузка...</div>
+    </fieldset>
     <fieldset>
       <legend>Набор дообучения (разметка врачей)</legend>
       <div class="wrap" id="fb">загрузка...</div>
@@ -105,6 +120,7 @@ const q = new URLSearchParams(location.search);
 const jobId = q.get("job");
 let rowIdx = Number(q.get("row") || 0), rows = [], boxes = [], drawing = false, start = null;
 let auto = [];  // рамки сервиса: {b: [x0, y0, x1, y1] в пикселях картинки, where, off: отклонена врачом}
+let marks = {}, ltPick = false;  // отметки малого вертела по "<study_uid>:<image_uid>"; режим отметки
 if (jobId) $("back").href = "./?job=" + encodeURIComponent(jobId);
 
 // ---------------- снимок и рамки
@@ -141,10 +157,79 @@ function drawBoxes(tmp) {
   $("nboxes").textContent = boxes.length || kept ? `в разметку: ${kept + boxes.length} (сервис ${kept}, врач ${boxes.length})` : "";
   $("undo").disabled = !boxes.length;
   $("autohint").style.display = showAuto() ? "" : "none";
+  drawMark();
 }
+// ---------------- малый вертел
+const isFemur = (r) => r && r.processing_status === "Success" && r.anatomical_region === "Проксимальный отдел бедра";
+const markKey = (r) => `${r.study_uid}:${r.image_uid}`;
+function servicePeak(r) { try { return r.overlay_lt_peak ? JSON.parse(r.overlay_lt_peak) : null; } catch (e) { return null; } }
+function drawMark() {
+  const r = rows[rowIdx];
+  if (!isFemur(r)) return;
+  const m = marks[markKey(r)], sp = servicePeak(r);
+  const s = Math.max(8, cv.width / 60);
+  ctx.lineWidth = Math.max(3, cv.width / 250); ctx.font = `${Math.max(14, cv.width / 50)}px Tahoma`;
+  if (m && m.state === "point") {
+    const [x, y] = [m.point[0] * cv.width, m.point[1] * cv.height];
+    ctx.strokeStyle = ctx.fillStyle = "#00e676";
+    ctx.beginPath(); ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s); ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s); ctx.stroke();
+    ctx.fillText("отмечено", x + s + 4, y + s + 14);
+  }
+  if (m && sp) {  // точка сервиса — только после отметки, чтобы не подсказывать
+    const [x, y] = [sp[0] * cv.width, sp[1] * cv.height];
+    ctx.strokeStyle = ctx.fillStyle = "#ffd600";
+    ctx.beginPath(); ctx.arc(x, y, s, 0, 2 * Math.PI); ctx.stroke();
+    ctx.fillText("сервис", x + s + 4, y - 4);
+  }
+}
+function markText(m) {
+  if (!m) return "";
+  if (m.state === "not_visible") return "✔ отмечено: не виден";
+  return "✔ отмечено" + (m.error_mm != null ? ` · до точки сервиса ${m.error_mm} мм` : " · у сервиса точки нет");
+}
+async function saveMark(body) {
+  const r = rows[rowIdx];
+  $("ltmsg").textContent = "сохранение...";
+  try {
+    const resp = await fetch("api/landmarks", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job: jobId, row: rowIdx, ...body})});
+    const j = await resp.json();
+    if (!resp.ok) throw new Error(j.detail || resp.status);
+    if (body.state === "clear") delete marks[markKey(r)]; else marks[markKey(r)] = j.entry;
+    $("ltmsg").textContent = body.state === "clear" ? "отметка сброшена" : markText(j.entry);
+    showSummary(j.summary);
+  } catch (e) { $("ltmsg").textContent = "ОШИБКА: " + e.message; }
+  setPick(false); drawBoxes();
+}
+function setPick(on) {
+  ltPick = on; $("ltbtn").classList.toggle("on", on); $("stage").classList.toggle("nodraw", !on && !drawing);
+  if (on && !$("plain").checked) { $("plain").checked = true; $("img").src = imgSrc(); }  // без легенды и линий — не подсказывать
+}
+$("ltbtn").onclick = () => { if (drawing) $("drawbtn").onclick(); setPick(!ltPick); };
+$("ltnone").onclick = () => saveMark({state: "not_visible"});
+$("ltclear").onclick = () => saveMark({state: "clear"});
+function nextUnmarked() {
+  for (let d = 1; d <= rows.length; d++) {
+    const k = (rowIdx + d) % rows.length, r = rows[k];
+    if (isFemur(r) && !r.duplicate_of && !marks[markKey(r)]) { rowIdx = k; showRow(); return; }
+  }
+  $("ltmsg").textContent = "все бёдра в этом задании отмечены";
+}
+$("ltnext").onclick = nextUnmarked;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && isFemur(rows[rowIdx]) && !["TEXTAREA", "INPUT", "BUTTON"].includes(document.activeElement.tagName)) nextUnmarked();
+});
+function showSummary(s) {
+  if (!s || !s.total) { $("ltsum").textContent = "Пока нет отметок. Откройте снимок бедра и нажмите «Отметить малый вертел»."; return; }
+  $("ltsum").innerHTML = `Отмечено бёдер: <b>${s.total}</b> (точкой ${s.points}, «не виден» ${s.not_visible}).` +
+    (s.compared ? ` Ошибка нахождения малого вертела сервисом: медиана <b>${s.median_mm} мм</b>, в пределах 5 мм — ` +
+      `${Math.round(100 * s.within_5mm)}%, в пределах 10 мм — ${Math.round(100 * s.within_10mm)}% (сравнено ${s.compared}).` : "");
+}
+fetch("api/landmarks").then((r) => r.json()).then((j) => { marks = j.items || {}; showSummary(j.summary); drawBoxes(); }).catch(() => {});
 function pos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; }
 cv.onmousedown = (e) => {
   if (drawing) { start = pos(e); return; }
+  if (ltPick) { const [x, y] = pos(e); saveMark({state: "point", point: [x / cv.width, y / cv.height]}); return; }
   if (!showAuto()) return;
   const [x, y] = pos(e);  // щелчок по рамке сервиса: «это не предмет» / вернуть
   const hit = auto.find((a) => x >= a.b[0] && x <= a.b[2] && y >= a.b[1] && y <= a.b[3]);
@@ -170,7 +255,7 @@ cv.onmouseup = (e) => {
   if (b[2] - b[0] > 6 && b[3] - b[1] > 6) { boxes.push(b); setLabel("Присутствуют посторонние предметы", 1); }
   drawBoxes();
 };
-$("drawbtn").onclick = () => { drawing = !drawing; $("drawbtn").classList.toggle("on", drawing); $("stage").classList.toggle("nodraw", !drawing); };
+$("drawbtn").onclick = () => { if (ltPick) setPick(false); drawing = !drawing; $("drawbtn").classList.toggle("on", drawing); $("stage").classList.toggle("nodraw", !drawing); };
 $("undo").onclick = () => { boxes.pop(); drawBoxes(); };
 $("img").onload = sizeCanvas;
 
@@ -179,6 +264,9 @@ function setLabel(name, v) { const el = document.querySelector(`input[name="${CS
 function showRow() {
   const r = rows[rowIdx];
   boxes = []; auto = []; drawing = false; $("autobox").style.display = "none"; $("auto").checked = true; $("drawbtn").classList.remove("on"); $("stage").classList.add("nodraw");
+  setPick(false);
+  $("ltbox").style.display = isFemur(r) ? "" : "none";
+  $("ltmsg").textContent = isFemur(r) ? (marks[markKey(r)] ? markText(marks[markKey(r)]) : (r.duplicate_of ? "копия снимка — отмечайте оригинал («Следующее бедро без отметки» копии пропускает)" : "не отмечено")) : "";
   $("prev").disabled = rowIdx <= 0; $("next").disabled = rowIdx >= rows.length - 1;
   $("where").textContent = rows.length ? `снимок ${rowIdx + 1} из ${rows.length}` : "";
   $("savemsg").textContent = ""; $("note").value = "";
@@ -196,11 +284,23 @@ function showRow() {
   $("crits").innerHTML = CRIT[r.anatomical_region].map((c) =>
     `<div class="crit" data-c="${esc(c)}"><span>${esc(c)}<br><span class="muted">сервис: ${said.has(c) ? "нарушение" : "норма"}</span></span>` +
     `<label><input type="radio" name="${esc(c)}" value="0" ${said.has(c) ? "" : "checked"}> норма</label>` +
-    `<label><input type="radio" name="${esc(c)}" value="1" ${said.has(c) ? "checked" : ""}> нарушение</label></div>`).join("");
+    `<label><input type="radio" name="${esc(c)}" value="1" ${said.has(c) ? "checked" : ""}> нарушение</label></div>`).join("") +
+    (spine ? "" : `<div id="rtype" style="margin:2px 0 6px 12px; padding-left:8px; border-left:2px solid #808080">` +
+      `<span class="muted">тип нарушения укладки${/переротац/.test(r.details || "") ? " (сервис: вероятно переротация)" : /недоротац/.test(r.details || "") ? " (сервис: вероятно недоротация)" : ""}</span><br>` +
+      `<label><input type="radio" name="rtype" value="over"> переротация — контур гладкий</label><br>` +
+      `<label><input type="radio" name="rtype" value="under"> недоротация — малый вертел крупный</label><br>` +
+      `<label><input type="radio" name="rtype" value="unknown"> другое / не знаю</label></div>`);
+  const syncType = () => {
+    const box = $("rtype"); if (!box) return;
+    const on = document.querySelector(`input[name="${CSS.escape("Некорректная укладка")}"]:checked`).value === "1";
+    box.style.opacity = on ? "1" : "0.4"; box.querySelectorAll("input").forEach((i) => { i.disabled = !on; if (!on) i.checked = false; });
+  };
   document.querySelectorAll("#crits input").forEach((el) => el.onchange = () => {
-    const box = el.closest(".crit"); const c = box.dataset.c;
+    const box = el.closest(".crit"); if (!box) return; const c = box.dataset.c;
     box.classList.toggle("chg", (document.querySelector(`input[name="${CSS.escape(c)}"]:checked`).value === "1") !== said.has(c));
+    syncType();
   });
+  syncType();
   $("save").disabled = false;
   // та же картинка (копия снимка) событие load не вызовет — рамки сервиса пересчитываются сразу
   if ($("img").complete && $("img").naturalWidth) sizeCanvas(); else drawBoxes();
@@ -215,7 +315,8 @@ $("save").onclick = async () => {
   $("save").disabled = true; $("savemsg").textContent = "сохранение...";
   try {
     const resp = await fetch("api/feedback", {method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({job: jobId, row: rowIdx, labels, boxes: all, overlay_size: [cv.width, cv.height], note: $("note").value})});
+      body: JSON.stringify({job: jobId, row: rowIdx, labels, boxes: all, overlay_size: [cv.width, cv.height], note: $("note").value,
+                            rotation_type: (document.querySelector('input[name="rtype"]:checked') || {}).value || null})});
     const j = await resp.json();
     if (!resp.ok) throw new Error(j.detail || resp.status);
     $("savemsg").textContent = `✔ сохранено (в наборе дообучения: ${j.total})`;
@@ -234,7 +335,8 @@ async function loadFeedback() {
   if (!j.items.length) { $("fb").innerHTML = '<span class="muted">Пока пусто.</span>'; return; }
   $("fb").innerHTML = `<table><tr><th>Когда</th><th>Область</th><th>Врач: нарушения</th><th>Сервис говорил</th><th>Рамок</th><th>Комментарий</th><th></th></tr>` +
     j.items.slice().reverse().map((e) => `<tr><td>${esc(e.created)}</td><td>${e.region === "spine" ? "позвоночник" : "бедро"}${e.side ? " (" + (e.side === "l" ? "левое" : "правое") + ")" : ""}</td>` +
-      `<td>${esc(Object.entries(e.labels).filter(([, v]) => v).map(([k]) => k).join("; ") || "нет (качественное)")}</td>` +
+      `<td>${esc(Object.entries(e.labels).filter(([, v]) => v).map(([k]) => k).join("; ") || "нет (качественное)")}` +
+      `${e.rotation_type ? " (" + {over: "переротация", under: "недоротация", unknown: "тип не указан"}[e.rotation_type] + ")" : ""}</td>` +
       `<td>${esc((e.source || {}).service_verdict || "нет нарушений")}</td><td class="num">${e.boxes.length}</td><td>${esc(e.note)}</td>` +
       `<td><button onclick="delFb('${e.id}')">удалить</button></td></tr>`).join("") + "</table>";
 }

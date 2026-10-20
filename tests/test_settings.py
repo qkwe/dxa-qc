@@ -345,3 +345,42 @@ def test_other_device_pixel_inside_old_window():
             assert abs(f1[key] / f0[key] - 1) < 0.25, (path.name, key, f0[key], f1[key])
             checked += 1
     assert checked >= 2
+
+
+def test_lt_landmarks_store_and_error(tmp_path):
+    """Отметка малого вертела: ошибка в мм до точки сервиса, «не виден», сводка, сброс; проверка ввода."""
+    from dxa import landmarks
+
+    e = landmarks.save("s", "i1", "point", [0.50, 0.50], [0.53, 0.54], [100.0, 150.0], root=tmp_path)
+    assert e["error_mm"] == pytest.approx(np.hypot(3.0, 6.0), abs=0.1)
+    landmarks.save("s", "i2", "not_visible", root=tmp_path)
+    s = landmarks.summary(tmp_path)
+    assert s["total"] == 2 and s["not_visible"] == 1 and s["compared"] == 1 and s["within_10mm"] == 1.0
+    for bad in (dict(state="x"), dict(state="point", point=None), dict(state="point", point=[1.5, 0.2])):
+        with pytest.raises(ValueError):
+            landmarks.save("s", "i3", root=tmp_path, **bad)
+    assert landmarks.delete("s", "i1", tmp_path) and landmarks.summary(tmp_path)["total"] == 1
+
+
+def test_feedback_rotation_type_and_merge_by_image_uid(tmp_path):
+    """Тип ротации — только при нарушении укладки бедра; повторная разметка снимка организатора заменяет его
+    метки, хотя исследование у организатора названо по каталогу, а в DICOM — по тегу (и остаётся в его группе)."""
+    if not Path("C:/dxa_test").exists():
+        pytest.skip("нет тестового фрагмента")
+    from dxa import feedback
+    from dxa.data import Image
+
+    dcm = sorted(Path("C:/dxa_test").rglob("*ЛПОБ*.dcm"))[0].read_bytes()
+    with pytest.raises(ValueError):
+        feedback.save(dcm, "femur", "l", {LABEL_POSITIONING: 0, LABEL_ROI: 0}, [], root=tmp_path, rotation_type="over")
+    with pytest.raises(ValueError):
+        feedback.save(dcm, "femur", "l", {LABEL_POSITIONING: 1, LABEL_ROI: 0}, [], root=tmp_path, rotation_type="sideways")
+    feedback.save(dcm, "femur", "l", {LABEL_POSITIONING: 0, LABEL_ROI: 0}, [], root=tmp_path)
+    feedback.save(dcm, "femur", "l", {LABEL_POSITIONING: 1, LABEL_ROI: 0}, [], root=tmp_path, rotation_type="under")
+    assert feedback.entries(tmp_path)[-1]["rotation_type"] == "under"
+    imgs = feedback.load_images(tmp_path)
+    base = [Image(study_uid="КАТАЛОГ-1", image_uid=imgs[0].image_uid, path=Path("x"), array=imgs[0].array, region="femur",
+                  side="l", instance=0, copies=1, n_images=1, quality=0, labels={LABEL_POSITIONING: 0, LABEL_ROI: 0})]
+    merged = feedback.merge(base, imgs)
+    assert len(merged) == 1                                       # не две копии снимка, а одна — с меткой врача
+    assert merged[0].labels[LABEL_POSITIONING] == 1 and merged[0].study_uid == "КАТАЛОГ-1"
