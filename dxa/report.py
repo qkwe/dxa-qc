@@ -92,7 +92,11 @@ def overlay(it, show_peak: bool = False, show_foreign: bool = False) -> P.Image:
             if sc is not None:
                 d.line([(sc * scale, 0), (sc * scale, a.shape[0] * scale)], fill=CYAN, width=2)
                 d.line([(hx * scale, hy * scale), (sc * scale, hy * scale)], fill=CYAN, width=2)
-                _label(d, (min(hx, sc) * scale + 4, max(hy * scale - small.size - 6, 0)), "офсет головки", small, CYAN)
+                # подпись — над серединой отрезка «центр головки — ось бедра», со значением
+                off = feats.get("rot_offset_mm", np.nan)
+                text = "офсет головки" + (f" {abs(off):.0f} мм" if np.isfinite(off) else "")
+                mid = (hx + sc) / 2 * scale - d.textlength(text, font=small) / 2
+                _label(d, (mid, max(hy * scale - small.size - 6, 0)), text, small, CYAN)
             d.ellipse([(hx - r) * scale, (hy - r) * scale, (hx + r) * scale, (hy + r) * scale],
                       outline=color, width=3)
             # зона седалищной кости (ТЗ: должна быть представлена) — медиальнее и ниже головки
