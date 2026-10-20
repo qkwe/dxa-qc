@@ -131,6 +131,14 @@ def measure(array: np.ndarray, spacing: Spacing) -> dict:
         dy = (np.median(ys[:n]) - np.median(ys[-n:])) * mm_y
         chord[frac] = float(np.degrees(np.arctan2(abs(dx), abs(dy))))
 
+    # стрела прогиба: насколько средняя линия столба отходит от хорды между крайними позвонками, мм.
+    # Дугообразный изгиб (сколиоз) даёт большую стрелу при любом наклоне хорды; врачи сколиоз
+    # не считают нарушением «ось не выровнена» — это анатомия пациента, а не укладка
+    n15 = max(int(len(ys) * 0.15), 3)
+    y0, x0, y1, x1 = np.median(ys[:n15]), np.median(xs[:n15]), np.median(ys[-n15:]), np.median(xs[-n15:])
+    chord_x = x0 + (ys - y0) * (x1 - x0) / (y1 - y0) if y1 != y0 else np.full(len(ys), x0)
+    sagitta = float(np.max(np.abs(xs - chord_x)) * mm_x)
+
     # смещение от центра кадра (по средней точке линии) и разброс по горизонтали
     center_mm = (float(np.median(xs)) - cols / 2) * mm_x
     return dict(
@@ -139,6 +147,7 @@ def measure(array: np.ndarray, spacing: Spacing) -> dict:
         axis_chord10_deg=chord[0.1],
         axis_chord15_deg=chord[0.15],
         axis_chord20_deg=chord[0.2],
+        axis_sagitta_mm=sagitta,
         axis_top_deg=abs(deg_top),
         axis_bottom_deg=abs(deg_bot),
         axis_max_half_deg=max(abs(deg_top), abs(deg_bot)),

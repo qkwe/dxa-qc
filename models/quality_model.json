@@ -1,5 +1,5 @@
 {
- "trained": "2026-10-20T08:29:55",
+ "trained": "2026-10-20T11:03:26",
  "n_images": 252,
  "n_labeled": 249,
  "fo_threshold": 0.02804885554483371,
@@ -16,5 +16,6 @@
   "balanced": 0.6016333333333334,
   "specific": 0.7833333333333334
  },
+ "scoliosis_sagitta_mm": 9.23522727272728,
  "region_anatomy_cv": "248 из 252"
 }

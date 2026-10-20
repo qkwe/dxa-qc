@@ -51,6 +51,10 @@ class Settings:
     # у аппарата организатора позвоночник 300 пикселей в ширину, бедро 248–280
     spine_min_width_px: int = 290
     pixel_spacing_mm: list[float] | None = None   # принудительный размер пикселя [x, y], мм; иначе из тега
+    # наклон оси при дугообразном изгибе столба (похоже на сколиоз) не считать нарушением укладки:
+    # в разметке организатора ни один из 14 снимков с пометкой «сколиоз» не отмечен как «ось не выровнена».
+    # False — строго по ТЗ: любой наклон хорды больше допуска — нарушение
+    axis_scoliosis_check: bool = True
     criteria: dict[str, bool] = field(default_factory=lambda: {k: True for k in CRITERIA_KEYS})
 
     def __post_init__(self):
@@ -61,6 +65,8 @@ class Settings:
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
                 raise ValueError(f"{name} ({label}): число от {lo:g} до {hi:g}, получено {v!r}")
         self.spine_min_width_px = int(self.spine_min_width_px)
+        if not isinstance(self.axis_scoliosis_check, bool):
+            raise ValueError(f"axis_scoliosis_check: true или false, получено {self.axis_scoliosis_check!r}")
         if self.pixel_spacing_mm is not None:
             ps = self.pixel_spacing_mm
             if (not isinstance(ps, (list, tuple)) or len(ps) != 2

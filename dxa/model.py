@@ -126,6 +126,20 @@ class QualityModel:
             # нет признака у норм (старые измерения) или он нулевой — зона не проверяется, а не «всё — предмет»
             self.fo_bone_thresholds[zone] = float(vals.max() * 1.02) if len(vals) and vals.max() > 0 else float("inf")
 
+        # --- ось: наклон при дугообразном изгибе (сколиоз) — не нарушение укладки. Порог стрелы прогиба —
+        # по F1 правила «наклон > допуска и изгиб < порога» на обучающей части; не помогает — проверка выключена
+        ang = np.array([feats[i].get("axis_chord15_deg", np.nan) for i in sp], float)
+        sag = np.array([feats[i].get("axis_sagitta_mm", np.nan) for i in sp], float)
+        y_ax = np.array([labels[i].get(LABEL_AXIS, 0) for i in sp])
+        tilted = np.nan_to_num(ang) > AXIS_LIMIT_DEG
+        self.scoliosis_sagitta_mm = float("inf")
+        if np.isfinite(sag).sum() >= 10 and tilted.any():
+            base = f1_score(y_ax, tilted, zero_division=0)
+            cands = np.unique(np.quantile(sag[np.isfinite(sag)], np.linspace(0.5, 0.98, 25)))
+            f1s = [f1_score(y_ax, tilted & ~(np.nan_to_num(sag) >= t), zero_division=0) for t in cands]
+            if max(f1s) > base:
+                self.scoliosis_sagitta_mm = float(cands[int(np.argmax(f1s))])
+
         # --- бедро: укладка/ротация — две оценки
         fe = np.nonzero(regions == "femur")[0]
         y = np.array([labels[i].get(LABEL_POSITIONING, 0) for i in fe])
@@ -221,8 +235,20 @@ class QualityModel:
         if region == "spine":
             lim, iliac = st.axis_limit_deg, st.iliac_min_frac
             ang = feat.get("axis_chord15_deg", np.nan)
-            out[LABEL_AXIS] = (int(np.isfinite(ang) and ang > lim), float(_nan([ang], 0)[0]),
-                               f"наклон оси {_v(ang, '.1f', '°')} (допуск {_tz(st, 'axis_limit_deg')}{lim:g}°){st.note('axis_limit_deg')}")
+            sag = feat.get("axis_sagitta_mm", np.nan)
+            sthr = getattr(self, "scoliosis_sagitta_mm", float("inf"))
+            scol = bool(np.isfinite(ang) and ang > lim and np.isfinite(sag) and sag >= sthr)
+            scol_note = (f"; столб изогнут дугой (стрела прогиба {sag:.0f} мм, порог {sthr:.0f}) — похоже на сколиоз, "
+                         + ("а не на неправильную укладку: нарушением не считается, проверьте" if st.axis_scoliosis_check
+                            else "но проверка сколиоза выключена пользователем — нарушение по наклону")) if scol else ""
+            if scol and st.axis_scoliosis_check:
+                out[LABEL_AXIS] = (0, float(min(ang, lim)),
+                                   f"наклон оси {_v(ang, '.1f', '°')} (допуск {_tz(st, 'axis_limit_deg')}{lim:g}°){st.note('axis_limit_deg')}"
+                                   + scol_note)
+            else:
+                out[LABEL_AXIS] = (int(np.isfinite(ang) and ang > lim), float(_nan([ang], 0)[0]),
+                                   f"наклон оси {_v(ang, '.1f', '°')} (допуск {_tz(st, 'axis_limit_deg')}{lim:g}°){st.note('axis_limit_deg')}"
+                                   + scol_note)
             fr = feat.get("sp_iliac_frac", np.nan)
             out[LABEL_POSITIONING] = (int(np.isfinite(fr) and fr < iliac), float(-_nan([fr], 0)[0]),
                                       ("гребни подвздошных костей не видны у нижнего края" if np.isfinite(fr) and fr < iliac

@@ -57,6 +57,8 @@ def settings_frame(st: Settings) -> pd.DataFrame:
     for k, (label, unit, *_ , tz) in PARAMS.items():
         rows.append((k, label + (f", {unit}" if unit else ""), getattr(st, k), getattr(default, k), "ТЗ" if tz else ""))
     rows.append(("pixel_spacing_mm", "Размер пикселя, мм", st.pixel_spacing_mm or "из тега", "из тега", ""))
+    rows.append(("axis_scoliosis_check", "Наклон оси при дугообразном изгибе (сколиоз) — не нарушение укладки",
+                 st.axis_scoliosis_check, default.axis_scoliosis_check, ""))
     rows += [(f"criteria.{k}", "Критерий включён", v, True, "") for k, v in st.criteria.items()]
     df = pd.DataFrame(rows, columns=["parameter", "description", "value", "default", "source"])
     df["changed"] = [str(v) != str(d) for v, d in zip(df["value"], df["default"])]

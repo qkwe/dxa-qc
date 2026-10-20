@@ -402,3 +402,20 @@ def test_lt_rotation_type_separate_from_mark(tmp_path):
         landmarks.set_rotation("s", "i", "sideways", root=tmp_path)
     landmarks.set_rotation("s", "i", None, root=tmp_path)
     assert "s:i" not in landmarks.load(tmp_path)
+
+
+def test_scoliosis_not_axis_violation():
+    """Наклон больше допуска при дугообразном изгибе — «похоже на сколиоз», не нарушение (настройка по умолчанию);
+    выключенная проверка — строго по ТЗ; прямой наклонённый столб — нарушение в любом случае."""
+    m = QualityModel()
+    m.scoliosis_sagitta_mm = 12.0
+    m.fo_threshold, m.fo_thresholds, m.fo_bone_thresholds = 0.03, None, {}
+    base = dict(sp_iliac_frac=0.1, fo_ridge_p99=0.0, fo_pelvis_max=0.0, fo_column_max=0.0)
+    curved = dict(base, axis_chord15_deg=6.5, axis_sagitta_mm=15.0)
+    straight = dict(base, axis_chord15_deg=6.5, axis_sagitta_mm=5.0)
+    flag, _, text = m.predict(curved, "spine")[LABEL_AXIS]
+    assert flag == 0 and "сколиоз" in text
+    assert m.predict(curved, "spine", Settings(axis_scoliosis_check=False))[LABEL_AXIS][0] == 1
+    assert m.predict(straight, "spine")[LABEL_AXIS][0] == 1
+    with pytest.raises(ValueError):
+        Settings(axis_scoliosis_check="да")

@@ -85,6 +85,7 @@ def main():
                 fo_threshold=model.fo_threshold, fo_over_spine_threshold=model.fo_over_spine_threshold,
                 femur_threshold=model.femur_threshold, area_norm=model.area_norm,
                 fo_thresholds=model.fo_thresholds, femur_thresholds=model.femur_thresholds,
+                scoliosis_sagitta_mm=model.scoliosis_sagitta_mm,
                 region_anatomy_cv=region_cv)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(dict(quality=model, region=region_model, meta=meta), args.out)

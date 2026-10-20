@@ -129,6 +129,7 @@
         <label class="row"><input type="checkbox" id="px_auto" checked><span class="l">Размер пикселя — из DICOM-тега</span></label>
         <label class="row" id="px_row" style="display:none"><span class="l">Размер пикселя x × y, мм</span>
           <input type="number" id="px_x" step="0.01" min="0.05" max="3" value="0.6"> × <input type="number" id="px_y" step="0.01" min="0.05" max="3" value="0.6"></label>
+        <label class="row" id="row_scol" title="В разметке организатора ни один снимок с пометкой «сколиоз» не отмечен как «ось не выровнена». Выключите — строго по ТЗ: любой наклон больше допуска — нарушение"><input type="checkbox" id="scol" checked><span class="l">Наклон оси при сколиозе (дугообразный изгиб столба) — не нарушение укладки</span></label>
       </div>
       <div>
         <b>Проверяемые критерии</b>
@@ -243,6 +244,7 @@ function buildSettings() {
     syncSettings(false);
   };
   for (const k of Object.keys(info.criteria)) $("c_" + k).onchange = (e) => { opts.criteria[k] = e.target.checked; syncSettings(); };
+  $("scol").onchange = () => { opts.axis_scoliosis_check = $("scol").checked; syncSettings(); };
   $("px_auto").onchange = () => { opts.pixel_spacing_mm = $("px_auto").checked ? null : [Number($("px_x").value), Number($("px_y").value)]; syncSettings(); };
   $("px_x").oninput = $("px_y").oninput = () => { if (!$("px_auto").checked) opts.pixel_spacing_mm = [Number($("px_x").value), Number($("px_y").value)]; syncSettings(false); };
 }
@@ -256,6 +258,8 @@ function syncSettings(redraw = true) {
   }
   for (const k of Object.keys(info.criteria)) $("c_" + k).checked = opts.criteria[k];
   $("px_auto").checked = !opts.pixel_spacing_mm;
+  $("scol").checked = opts.axis_scoliosis_check !== false;
+  $("row_scol").classList.toggle("chg", opts.axis_scoliosis_check !== d.axis_scoliosis_check);
   $("px_row").style.display = opts.pixel_spacing_mm ? "" : "none";
   if (opts.pixel_spacing_mm && redraw) [$("px_x").value, $("px_y").value] = opts.pixel_spacing_mm;
   store.set(changedOpts());
