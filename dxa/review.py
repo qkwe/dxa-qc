@@ -52,6 +52,12 @@ def _source_bytes(job: dict, row: dict) -> bytes:
     src = job.get("src")
     if not src:
         raise HTTPException(409, "у задания не сохранён путь к входным данным (задание создано старой версией)")
+    # файл каталога — читаем сразу (перебор всех файлов набора занимал секунды на каждый снимок);
+    # только внутри входных данных задания, путь из строки задания наружу не выводит
+    direct = Path(row["path_to_study"])
+    base = Path(src).resolve()
+    if direct.is_file() and (base == direct.resolve() or base in direct.resolve().parents):
+        return direct.read_bytes()
     for name, load in _iter_sources(src):
         if name == row["path_to_study"]:
             return load()
@@ -76,6 +82,9 @@ def plain_image(job_id: str, k: int):
     rows = job.get("rows") or []
     if not 0 <= k < len(rows) or rows[k].get("processing_status") != "Success":
         raise HTTPException(404, "нет такого обработанного снимка")
+    cache = _api().JOBS / Path(job_id).name / "plain" / f"{k}.png"   # уже построенный — сразу с диска
+    if cache.exists():
+        return Response(cache.read_bytes(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
     ds = pydicom.dcmread(io.BytesIO(_source_bytes(job, rows[k])), force=True)
     it = Item(path=rows[k]["path_to_study"], ds=ds, array=_decode(ds))
     Service._to_native(it, Service._spacing(it, Settings.from_dict(job.get("settings"))))
@@ -83,6 +92,11 @@ def plain_image(job_id: str, k: int):
     img = PImage.fromarray((a * 255).astype("uint8")).resize((a.shape[1] * 3, a.shape[0] * 3))
     buf = io.BytesIO()
     img.save(buf, "PNG")
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(buf.getvalue())
+    except OSError:
+        pass
     return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
 
