@@ -82,6 +82,11 @@ def _settings(raw) -> Settings:
         if not isinstance(raw, dict):
             raise ValueError("настройки должны быть JSON-объектом")
         base = service().settings.to_dict()
+        raw = dict(raw)
+        if isinstance(raw.get("criteria"), dict):
+            # критерии — поверх настроек сервиса, а не вместо: выключенный в DXA_CONFIG критерий
+            # не должен молча включаться, если задание перечислило только часть критериев
+            raw["criteria"] = {**base["criteria"], **raw["criteria"]}
         base.update(raw)
         return Settings.from_dict(base)
     except (ValueError, TypeError) as e:

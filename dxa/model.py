@@ -9,7 +9,7 @@
 | бедро | Некорректная укладка (ротация) | среднее двух оценок: малый вертел (U-образно), офсет головки |
 
 Обучаемые параметры (fit): медиана выступа малого вертела у нормы, эталонные распределения
-для перевода оценок в процентили, пороги для двух оценок, калибровка вероятностей.
+для перевода оценок в процентили, пороги для двух оценок, калибровка вероятностей (изотоническая, по OOF-оценкам).
 Нейросетевых признаков нет: замороженный SigLIP в честной CV не улучшал ротацию бедра
 (AUC 0.852 с ним против 0.863 без него), а тянул за собой torch и 1.6 ГБ весов.
 Пороги подбираются по F1 на out-of-fold предсказаниях ОБУЧАЮЩЕЙ части.
@@ -23,7 +23,6 @@
 from __future__ import annotations
 
 import numpy as np
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 
 from .data import LABEL_AXIS, LABEL_FOREIGN, LABEL_POSITIONING, LABEL_ROI
@@ -96,7 +95,15 @@ def _mode_thresholds(y: np.ndarray, score: np.ndarray, balanced: float) -> dict[
 
 
 class QualityModel:
-    def fit(self, feats: list[dict], regions: list[str], labels: list[dict]):
+    def fit(self, feats: list[dict], regions: list[str], labels: list[dict], groups=None):
+        """Пороги и правила — по всей обучающей части; калибровка вероятностей — по out-of-fold оценкам
+        (внутренние фолды по исследованиям: groups = StudyInstanceUID), иначе калибратор видит оценки
+        модели на тех же снимках, по которым подобраны её пороги."""
+        self._fit_rules(feats, regions, labels)
+        self._fit_calibration(feats, regions, labels, groups)
+        return self
+
+    def _fit_rules(self, feats: list[dict], regions: list[str], labels: list[dict]):
         regions = np.array(regions)
         # --- позвоночник: посторонние предметы — один порог по обучению
         sp = np.nonzero(regions == "spine")[0]
@@ -136,31 +143,59 @@ class QualityModel:
         self.femur_threshold = _best_threshold(y, score)
         self.femur_thresholds = _mode_thresholds(y, score, self.femur_threshold)
 
-        # --- калибровка: оценка каждого критерия -> вероятность нарушения (для quality_prob)
-        self.calib = {}
-        spine_out = [self.predict(feats[i], "spine") for i in sp]
-        for L in (LABEL_AXIS, LABEL_POSITIONING, LABEL_FOREIGN):
-            idx = [k for k, i in enumerate(sp) if L in labels[i]]
-            self._fit_calib(("spine", L), [spine_out[k][L][1] for k in idx], [labels[sp[k]][L] for k in idx])
-        roi_idx = [i for i in fe if LABEL_ROI in labels[i]]
-        self._fit_calib(("femur", LABEL_ROI), [self.predict(feats[i], "femur")[LABEL_ROI][1] for i in roi_idx],
-                        [labels[i][LABEL_ROI] for i in roi_idx])
-        self._fit_calib(("femur", LABEL_POSITIONING), score, y)
         return self
 
-    def _fit_calib(self, key, score, y):
-        s = np.asarray(score, float)
-        y = np.asarray(y, int)
-        mu, sd = float(s.mean()), float(s.std() + 1e-9)
-        lr = LogisticRegression(C=1.0).fit(((s - mu) / sd)[:, None], y) if 0 < y.sum() < len(y) else None
-        self.calib[key] = (mu, sd, lr, float(y.mean()))
+    def _scores(self, feats, regions, labels, idx) -> dict:
+        """{(область, метка): (оценки, метки)} — оценки модели по снимкам idx с разметкой критерия."""
+        out = {}
+        for i in idx:
+            for L, (_, s, _) in self.predict(feats[i], regions[i]).items():
+                if L in labels[i]:
+                    sc, ys = out.setdefault((regions[i], L), ([], []))
+                    sc.append(s)
+                    ys.append(int(labels[i][L]))
+        return out
+
+    def _fit_calibration(self, feats, regions, labels, groups=None, folds: int = 5):
+        """Оценка критерия → вероятность нарушения (для quality_prob): изотоническая регрессия по OOF-оценкам.
+        Изотоника (монотонная ступенчатая функция) не навязывает логистическую форму: в честной CV
+        quality_prob ROC-AUC 0.863 против 0.840 у логистической калибровки (та же CV, те же фолды)."""
+        from sklearn.isotonic import IsotonicRegression
+        from sklearn.model_selection import GroupKFold
+
+        regions = list(regions)
+        n = len(feats)
+        groups = np.asarray(groups if groups is not None else np.arange(n))
+        pool: dict = {}
+        k = min(folds, len(np.unique(groups)))
+        if k >= 2:
+            for tr, te in GroupKFold(k).split(np.zeros(n), groups=groups):
+                inner = QualityModel()._fit_rules([feats[i] for i in tr], [regions[i] for i in tr], [labels[i] for i in tr])
+                for key, (s, y) in inner._scores(feats, regions, labels, te).items():
+                    pool.setdefault(key, ([], []))
+                    pool[key][0].extend(s)
+                    pool[key][1].extend(y)
+        else:  # слишком мало исследований для внутренних фолдов — оценки самой модели
+            pool = self._scores(feats, regions, labels, range(n))
+        self.calib = {}
+        for key, (s, y) in pool.items():
+            s, y = np.asarray(s, float), np.asarray(y, int)
+            iso = (IsotonicRegression(out_of_bounds="clip", y_min=0.001, y_max=0.999).fit(s, y)
+                   if 0 < y.sum() < len(y) else None)
+            self.calib[key] = ("iso", iso, float(y.mean()))
 
     def probabilities(self, out: dict, region: str) -> tuple[dict, float]:
         """Вероятность нарушения по каждому критерию и итоговая quality_prob = P(хотя бы одно нарушение)."""
         probs = {}
         for L, (_, score, _) in out.items():
-            mu, sd, lr, base = self.calib.get((region, L), (0.0, 1.0, None, 0.0))
-            probs[L] = float(lr.predict_proba([[(score - mu) / sd]])[0, 1]) if lr is not None else base
+            c = self.calib.get((region, L))
+            if c is None:
+                probs[L] = 0.0
+            elif c[0] == "iso":
+                probs[L] = float(c[1].predict([score])[0]) if c[1] is not None else c[2]
+            else:  # модель, сохранённая прежней версией: (mu, sd, логистическая регрессия, доля)
+                mu, sd, lr, base = c
+                probs[L] = float(lr.predict_proba([[(score - mu) / sd]])[0, 1]) if lr is not None else base
         return probs, float(1 - np.prod([1 - p for p in probs.values()]))
 
     def _femur_score(self, area, off):

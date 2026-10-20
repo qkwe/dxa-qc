@@ -58,7 +58,7 @@ qprob = np.zeros(len(images))
 mode_flags = {md: {L: np.zeros(len(images)) for L in LABELS} for md in MODES}
 for seed in range(SEEDS):
     for tr, te in StratifiedGroupKFold(FOLDS, shuffle=True, random_state=seed).split(np.zeros(len(images)), y_any, groups):
-        m = QualityModel().fit([feats[i] for i in tr], [regions[i] for i in tr], [labels[i] for i in tr])
+        m = QualityModel().fit([feats[i] for i in tr], [regions[i] for i in tr], [labels[i] for i in tr], groups=groups[tr])
         for i in te:
             out = m.predict(feats[i], regions[i])
             for L, (flag, score, _) in out.items():

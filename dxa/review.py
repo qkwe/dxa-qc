@@ -289,23 +289,33 @@ def _activate(src: Path):
 def accept_candidate(body: dict):
     stamp = Path(str(body.get("candidate", ""))).name
     cand = MODELS / "candidates" / stamp
-    if not stamp or not (cand / "quality_model.joblib").exists():
-        raise HTTPException(404, "нет такого кандидата")
-    backup = _backup_current(f"заменена кандидатом {stamp}")
-    _activate(cand)
-    _retrain.update(status="accepted", accepted=stamp)
+    with _lock:
+        # во время дообучения статус и файлы кандидата меняются: применение затёрло бы статус (и «Остановить»
+        # перестало бы работать), а недообученный кандидат без честной оценки попал бы в работу
+        if _retrain.get("status") == "running":
+            raise HTTPException(409, "идёт дообучение — дождитесь окончания или остановите его")
+        if not stamp or not (cand / "quality_model.joblib").exists():
+            raise HTTPException(404, "нет такого кандидата")
+        if not (cand / "agreement.json").exists():
+            raise HTTPException(409, "кандидат не прошёл оценку до конца — применять его нельзя")
+        backup = _backup_current(f"заменена кандидатом {stamp}")
+        _activate(cand)
+        _retrain.update(status="accepted", accepted=stamp)
     return {"active": stamp, "backup": backup}
 
 
 @router.post("/api/models/rollback")
 def rollback():
-    hist = sorted((MODELS / "history").glob("*/quality_model.joblib")) if (MODELS / "history").exists() else []
-    if not hist:
-        raise HTTPException(404, "нет сохранённых версий — откатывать некуда")
-    last = hist[-1].parent
-    _activate(last)
-    shutil.rmtree(last)          # возвращённая версия снова действующая
-    _retrain.update(status="rolled_back")
+    with _lock:
+        if _retrain.get("status") == "running":
+            raise HTTPException(409, "идёт дообучение — дождитесь окончания или остановите его")
+        hist = sorted((MODELS / "history").glob("*/quality_model.joblib")) if (MODELS / "history").exists() else []
+        if not hist:
+            raise HTTPException(404, "нет сохранённых версий — откатывать некуда")
+        last = hist[-1].parent
+        _activate(last)
+        shutil.rmtree(last)          # возвращённая версия снова действующая
+        _retrain.update(status="rolled_back")
     return {"restored": last.name}
 
 

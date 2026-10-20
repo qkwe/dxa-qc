@@ -281,3 +281,67 @@ def test_feedback_store_and_merge(tmp_path):
     merged = feedback.merge(base, imgs)
     assert len(merged) == 1 and merged[0].labels[LABEL_FOREIGN] == 1                        # врач заменил метку
     assert feedback.delete(eid, tmp_path) and not feedback.entries(tmp_path)
+
+
+def test_job_criteria_merge_with_service_settings(monkeypatch):
+    """Задание с частью критериев не включает критерий, выключенный в настройках сервиса (DXA_CONFIG)."""
+    from types import SimpleNamespace
+
+    from dxa import api
+
+    base = Settings(criteria={"spine_foreign": False})
+    monkeypatch.setattr(api, "service", lambda: SimpleNamespace(settings=base))
+    st = api._settings({"criteria": {"spine_axis": False}})
+    assert st.criteria["spine_foreign"] is False and st.criteria["spine_axis"] is False
+    assert st.criteria["femur_roi"] is True
+
+
+def test_model_switch_blocked_while_retraining(tmp_path, monkeypatch):
+    """«Применить»/«Откатить» во время дообучения и применение неоценённого кандидата — отказ 409."""
+    from fastapi import HTTPException
+
+    from dxa import review
+
+    cand = tmp_path / "candidates" / "c1"
+    cand.mkdir(parents=True)
+    (cand / "quality_model.joblib").write_bytes(b"x")       # обучение прошло, оценки ещё нет
+    monkeypatch.setattr(review, "MODELS", tmp_path)
+    monkeypatch.setattr(review, "_retrain", {"status": "running"})
+    for call in (lambda: review.accept_candidate({"candidate": "c1"}), review.rollback):
+        with pytest.raises(HTTPException) as err:
+            call()
+        assert err.value.status_code == 409
+    assert review._retrain["status"] == "running"           # статус не затёрт — «Остановить» работает
+    review._retrain["status"] = "done"
+    with pytest.raises(HTTPException) as err:
+        review.accept_candidate({"candidate": "c1"})
+    assert err.value.status_code == 409
+
+
+@pytest.mark.skipif(not MODEL.exists() or not Path("C:/dxa_test").exists(), reason="нет модели или тестового фрагмента")
+def test_other_device_pixel_inside_old_window():
+    """Снимок «другого аппарата» с честным пикселем 0.42 мм (внутри прежнего окна 0.4–1.0 мм) пересчитывается
+    к 0.6 мм: сигнал детектора предметов и площадь выступа контура бедра — как на оригинале (без пересчёта
+    они проседали на ~40%: 0.124 → 0.072 и 27.5 → 16.4 мм²)."""
+    import pydicom
+    from PIL import Image as PImage
+
+    from dxa.pipeline import Item, Service, _decode
+
+    svc = Service(str(MODEL))
+    checked = 0
+    for path in sorted(Path("C:/dxa_test").rglob("*.dcm")):
+        ds = pydicom.dcmread(path, force=True)
+        arr = _decode(ds).astype(np.float32)
+        feats = []
+        for p, a in ((None, arr), (0.42, np.asarray(PImage.fromarray(arr).resize(
+                (round(arr.shape[1] * 0.6 / 0.42), round(arr.shape[0] * 0.6 / 0.42)), PImage.BILINEAR)))):
+            it = Item(path=str(path), ds=ds, array=np.rint(a).astype(np.uint16))
+            svc._process_image(it, Settings(pixel_spacing_mm=[p, p] if p else None))
+            feats.append((it.region, it.result["features"]))
+        (region, f0), (_, f1) = feats
+        key = "fo_ridge_p99" if region == "spine" else "rot_lt_area_mm2"
+        if np.isfinite(f0.get(key, np.nan)) and f0[key] > 0:
+            assert abs(f1[key] / f0[key] - 1) < 0.25, (path.name, key, f0[key], f1[key])
+            checked += 1
+    assert checked >= 2

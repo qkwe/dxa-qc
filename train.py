@@ -67,7 +67,8 @@ def main():
     pickle.dump(cache, open(args.cache, "wb"))
 
     lab = [i for i, im in enumerate(images) if im.quality is not None]
-    model = QualityModel().fit([geo[i] for i in lab], [images[i].region for i in lab], [images[i].labels for i in lab])
+    model = QualityModel().fit([geo[i] for i in lab], [images[i].region for i in lab], [images[i].labels for i in lab],
+                               groups=[images[i].study_uid for i in lab])
     # область по анатомии — запасной способ для снимков не «родного» размера (dxa/region.py)
     arrays = [im.array for im in images]
     is_spine = np.array([im.region == "spine" for im in images], int)

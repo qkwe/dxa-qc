@@ -273,6 +273,7 @@ async function pollRetrain() {
   $("retrain").disabled = s.status === "running" || !s.train_data || !s.feedback;
   $("rcancel").disabled = s.status !== "running";
   $("accept").disabled = s.status !== "done";
+  $("rollback").disabled = s.status === "running";
   $("accept").dataset.c = s.candidate || "";
   $("cmp").innerHTML = (s.current || s.candidate_metrics ? cmpTable(s.current, s.candidate_metrics) : "") + agreeTable(s.agreement);
   clearTimeout(rtimer); if (s.status === "running") rtimer = setTimeout(pollRetrain, 3000);
