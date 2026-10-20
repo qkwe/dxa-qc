@@ -53,6 +53,7 @@
         <div style="margin-top:6px">
           <button id="drawbtn" disabled title="Нажмите и обведите прямоугольником пропущенный посторонний предмет">▭ Обвести предмет</button>
           <button id="undo" disabled>Убрать последнюю рамку</button>
+          <label id="plainbox" style="margin-left:8px" title="Снимок без легенды и линий разметки — видно и верх кадра"><input type="checkbox" id="plain"> чистый снимок</label>
           <label id="autobox" style="display:none; margin-left:8px"><input type="checkbox" id="auto" checked> найденные сервисом</label>
           <span class="muted" id="nboxes"></span>
         </div>
@@ -109,11 +110,16 @@ if (jobId) $("back").href = "./?job=" + encodeURIComponent(jobId);
 // ---------------- снимок и рамки
 const cv = $("cv"), ctx = cv.getContext("2d");
 function sizeCanvas() {
-  cv.width = $("img").naturalWidth || 1; cv.height = $("img").naturalHeight || 1;
+  const w = $("img").naturalWidth || 1, h = $("img").naturalHeight || 1;
+  // смена картинки (разметка ↔ чистый снимок) того же снимка: рамки врача и отметки «не предмет» сохраняются
+  const kx = w / cv.width, ky = h / cv.height;
+  boxes = boxes.map((b) => [b[0] * kx, b[1] * ky, b[2] * kx, b[3] * ky]);
+  const off = auto.map((a) => a.off);
+  cv.width = w; cv.height = h;
   const r = rows[rowIdx] || {};
   let frac = [];
   try { frac = JSON.parse(r.overlay_fo_boxes || "[]"); } catch (e) { frac = []; }
-  auto = frac.map((f) => ({b: [f[0] * cv.width, f[1] * cv.height, f[2] * cv.width, f[3] * cv.height], where: f[4] || "", off: false}));
+  auto = frac.map((f, k) => ({b: [f[0] * w, f[1] * h, f[2] * w, f[3] * h], where: f[4] || "", off: !!off[k]}));
   $("autobox").style.display = auto.length ? "" : "none";
   drawBoxes();
 }
@@ -150,6 +156,12 @@ cv.onmousedown = (e) => {
   }
 };
 $("auto").onchange = () => drawBoxes();
+function imgSrc() {
+  const r = rows[rowIdx];
+  if (!r || !r.overlay) return "";
+  return $("plain").checked ? `api/jobs/${jobId}/plain/${rowIdx}.png` : `api/jobs/${jobId}/overlay/${encodeURI(r.overlay)}`;
+}
+$("plain").onchange = () => { $("img").src = imgSrc(); };
 cv.onmousemove = (e) => { if (!drawing || !start) return; const p = pos(e); drawBoxes([Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])]); };
 cv.onmouseup = (e) => {
   if (!drawing || !start) return;
@@ -175,7 +187,7 @@ function showRow() {
     $("crits").innerHTML = ""; $("save").disabled = true; $("drawbtn").disabled = true; $("img").removeAttribute("src"); return;
   }
   const spine = r.anatomical_region.startsWith("Пояснич");
-  $("img").src = r.overlay ? `api/jobs/${jobId}/overlay/${encodeURI(r.overlay)}` : "";
+  $("img").src = imgSrc();
   $("hint").textContent = spine ? "— «Обвести предмет», затем выделите его мышью" : "";
   $("drawbtn").disabled = !spine;
   $("info").innerHTML = `<b>${esc(r.anatomical_region)}${r.side ? " (" + esc(r.side) + ")" : ""}</b><br>` +

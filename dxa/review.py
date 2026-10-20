@@ -58,6 +58,34 @@ def _source_bytes(job: dict, row: dict) -> bytes:
     raise HTTPException(404, "исходный файл задания не найден (удалён?)")
 
 
+@router.get("/api/jobs/{job_id}/plain/{k}.png")
+def plain_image(job_id: str, k: int):
+    """Снимок без легенды и разметки — для обводки предметов (легенда закрывает верх кадра). Тот же кадр,
+    что под картинкой разметки (тот же пересчёт к ~0.6 мм, ×3), поэтому рамки совпадают."""
+    import io
+
+    import pydicom
+    from fastapi.responses import Response
+    from PIL import Image as PImage
+
+    from . import axis
+    from .pipeline import Item, Service, _decode
+    from .settings import Settings
+
+    job = _api().job_status_dict(job_id)
+    rows = job.get("rows") or []
+    if not 0 <= k < len(rows) or rows[k].get("processing_status") != "Success":
+        raise HTTPException(404, "нет такого обработанного снимка")
+    ds = pydicom.dcmread(io.BytesIO(_source_bytes(job, rows[k])), force=True)
+    it = Item(path=rows[k]["path_to_study"], ds=ds, array=_decode(ds))
+    Service._to_native(it, Service._spacing(it, Settings.from_dict(job.get("settings"))))
+    a = axis.normalize(it.array)
+    img = PImage.fromarray((a * 255).astype("uint8")).resize((a.shape[1] * 3, a.shape[0] * 3))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
 @router.post("/api/feedback")
 def add_feedback(body: dict):
     """{job, row, labels: {метка: 0/1}, boxes: [[x0,y0,x1,y1]] в пикселях картинки разметки,
