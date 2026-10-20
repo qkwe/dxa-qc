@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import os
 import shutil
@@ -29,6 +30,8 @@ FEEDBACK = Path(os.environ.get("DXA_FEEDBACK", "out/feedback"))
 CRITERIA = {"spine": [LABEL_POSITIONING, LABEL_AXIS, LABEL_FOREIGN], "femur": [LABEL_POSITIONING, LABEL_ROI]}
 # тип нарушения ротации бедра (ТЗ, рис. 5): переротация — контур гладкий, недоротация — малый вертел крупный
 ROTATION_TYPES = ("over", "under", "unknown")
+# порядок сохранения: часы Windows тикают раз в ~15 мс — две записи подряд получают одно время
+_seq = itertools.count()
 
 
 def save(dicom: bytes, region: str, side: str | None, labels: dict, boxes: list, note: str = "",
@@ -66,7 +69,7 @@ def save(dicom: bytes, region: str, side: str | None, labels: dict, boxes: list,
     d = root / entry_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "image.dcm").write_bytes(dicom)
-    entry = dict(id=entry_id, created=time.strftime("%Y-%m-%d %H:%M:%S"), ts=time.time(),
+    entry = dict(id=entry_id, created=time.strftime("%Y-%m-%d %H:%M:%S"), ts=time.time(), seq=next(_seq),
                  study_uid=str(ds.get("StudyInstanceUID", "") or entry_id),
                  image_uid=str(ds.get("SOPInstanceUID", "") or entry_id),
                  region=region, side=side, labels={k: int(v) for k, v in labels.items()},
@@ -84,7 +87,7 @@ def entries(root: Path = FEEDBACK) -> list[dict]:
             out.append(json.loads(f.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             continue
-    return sorted(out, key=lambda e: (e.get("created", ""), e.get("ts", 0.0)))  # ts — порядок внутри секунды
+    return sorted(out, key=lambda e: (e.get("created", ""), e.get("ts", 0.0), e.get("seq", 0)))  # порядок сохранения
 
 
 def delete(entry_id: str, root: Path = FEEDBACK) -> bool:

@@ -44,6 +44,8 @@
     <button id="prev" disabled>◀ Предыдущий снимок</button>
     <button id="next" disabled>Следующий снимок ▶</button>
     <span class="muted" id="where"></span>
+    <a id="ltmode" class="btn" style="margin-left:auto" href="#"
+       title="Отметки малого вертела: проверка, там ли сервис его находит. Не меняет метки и обучение">Поверка измерителя: малый вертел</a>
   </div>
   <div class="main">
     <div>
@@ -89,8 +91,8 @@
     </div>
   </div>
   <div style="padding: 0 8px 8px">
-    <fieldset>
-      <legend>Отметки малого вертела (точность сервиса)</legend>
+    <fieldset id="ltfield" style="display:none">
+      <legend>Поверка измерителя: отметки малого вертела (точность сервиса)</legend>
       <div id="ltsum" class="muted">загрузка...</div>
     </fieldset>
     <fieldset>
@@ -120,6 +122,19 @@ const CRIT = {"Поясничный отдел позвоночника": ["Не
               "Проксимальный отдел бедра": ["Некорректная укладка", "Некорректная область интереса"]};
 const q = new URLSearchParams(location.search);
 const jobId = q.get("job");
+// поверка измерителя (отметки малого вертела) — отдельный режим, не мешает врачу в обычной разметке
+const LT_MODE = q.get("mode") === "lt";
+function ltLink(row) {
+  const u = new URLSearchParams(location.search);
+  if (LT_MODE) u.delete("mode"); else u.set("mode", "lt");
+  if (row != null) u.set("row", row);
+  $("ltmode").href = "review?" + u.toString();
+}
+{
+  ltLink();
+  $("ltmode").textContent = LT_MODE ? "← К разметке врача" : "Поверка измерителя: малый вертел";
+  $("ltfield").style.display = LT_MODE ? "" : "none";
+}
 let rowIdx = Number(q.get("row") || 0), rows = [], boxes = [], drawing = false, start = null;
 let auto = [];  // рамки сервиса: {b: [x0, y0, x1, y1] в пикселях картинки, where, off: отклонена врачом}
 let marks = {}, ltPick = false, ltFaint = false;  // отметки малого вертела по "<study_uid>:<image_uid>"; режим отметки
@@ -221,7 +236,7 @@ function nextUnmarked() {
 }
 $("ltnext").onclick = nextUnmarked;
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && isFemur(rows[rowIdx]) && !["TEXTAREA", "INPUT", "BUTTON"].includes(document.activeElement.tagName)) nextUnmarked();
+  if (LT_MODE && e.key === "Enter" && isFemur(rows[rowIdx]) && !["TEXTAREA", "INPUT", "BUTTON"].includes(document.activeElement.tagName)) nextUnmarked();
 });
 function showSummary(s) {
   if (!s || !s.total) { $("ltsum").textContent = "Пока нет отметок. Откройте снимок бедра и нажмите «Отметить малый вертел»."; return; }
@@ -269,7 +284,8 @@ function showRow() {
   const r = rows[rowIdx];
   boxes = []; auto = []; drawing = false; $("autobox").style.display = "none"; $("auto").checked = true; $("drawbtn").classList.remove("on"); $("stage").classList.add("nodraw");
   setPick(false);
-  $("ltbox").style.display = isFemur(r) ? "" : "none";
+  $("ltbox").style.display = LT_MODE && isFemur(r) ? "" : "none";
+  ltLink(rowIdx);
   $("ltmsg").textContent = isFemur(r) ? (marks[markKey(r)] ? markText(marks[markKey(r)]) : (r.duplicate_of ? "копия снимка — отмечайте оригинал («Следующее бедро без отметки» копии пропускает)" : "не отмечено")) : "";
   $("prev").disabled = rowIdx <= 0; $("next").disabled = rowIdx >= rows.length - 1;
   $("where").textContent = rows.length ? `снимок ${rowIdx + 1} из ${rows.length}` : "";
